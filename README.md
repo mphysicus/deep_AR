@@ -3,6 +3,12 @@
   <img src="Deep AR logo.png" alt="DeepAR Logo" width="300"/>
 </p>
 
+---
+
+> **⚠️ Note**: This is an ongoing project under active development. Features, documentation and code may change.
+
+---
+
 
 
 
