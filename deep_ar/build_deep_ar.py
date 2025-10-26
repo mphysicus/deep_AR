@@ -76,7 +76,7 @@ def _build_deep_ar(
     input_generator = IVT2RGB()
     map_reconstructor = Mask2ARMaps()
     deep_ar = DeepAR(
-        sam_ar=sam_ar,
+        sam_model=sam_ar,
         input_generator=input_generator,
         map_reconstructor=map_reconstructor,)
     
