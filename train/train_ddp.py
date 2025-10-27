@@ -132,9 +132,9 @@ def train_ddp(rank, world_size, args):
 
     if args.checkpoint is not None:
         if rank == 0:
-            print(f"Loading SAM's image encoder and mask decoder checkpoint from {args.checkpoint}...")
+            print(f"Loading SAM's image encoder and mask decoder checkpoint from {args.original_sam_checkpoint}...")
         
-        state_dict = torch.load(args.checkpoint, map_location=f'cuda:{rank}')
+        state_dict = torch.load(args.original_sam_checkpoint, map_location=f'cuda:{rank}')
         adapted_state_dict = {"sam_model." + k: v for k, v in state_dict.items()}
         
         load_result = model.load_state_dict(adapted_state_dict, strict=False)
@@ -250,7 +250,7 @@ def train_ddp(rank, world_size, args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"best_model_epoch_{epoch+1}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}.pth"
                 
                 # Save appropriate state dict based on training mode
                 if args.peft_method == 'lora':
@@ -289,12 +289,13 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--initial_lr', type=float, default=1e-4, help='Initial learning rate')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to save the model checkpoint')
     parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
     parser.add_argument('--wandb_project', type=str, default='deep_ar_project', help='WandB project name')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name (default: auto-generated)')
     parser.add_argument('--wandb_tags', type=str, default=None, help='Comma-separated tags for WandB run')
+    parser.add_argument('--original_sam_checkpoint', type=str, default=None, help='Path to original SAM checkpoint for initialization')
     
     # PEFT (Parameter-Efficient Fine-Tuning) arguments
     parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora'],

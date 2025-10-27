@@ -12,6 +12,8 @@ parameters:
     value: "/storage/prakhar/Sem_Project/data_files/merged/train"
   val_input_dir:
     value: "/storage/prakhar/Sem_Project/data_files/merged/val"
+  original_sam_checkpoint:
+    value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
   peft_method:
     value: "lora"
   epochs:
