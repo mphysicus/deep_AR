@@ -20,7 +20,7 @@ def merge_monthly_to_yearly(
 
         #Collect all 12 monthly files for this year
         for month in range(1, 13):
-            file_path = input_dir / f"IVT_monthly_{year}_{month:02d}.nc"
+            file_path = input_dir / f"{year}_{month:02d}_IVT.nc"
             if file_path.exists():
                 monthly_files.append(file_path)
             else:
