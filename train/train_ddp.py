@@ -8,16 +8,13 @@ from torch.amp import GradScaler, autocast
 import argparse
 import os
 import sys
+from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deep_ar.build_deep_ar import deep_ar_model_registry
 from deep_ar.data.datasets import ARTrainingDataset
 
 # Import LoRA utilities
-from lora.utils import (
-    apply_lora_to_sam, 
-    mark_only_lora_as_trainable as mark_lora_trainable,
-    lora_state_dict as get_lora_state_dict
-)
+from lora.utils import apply_lora_to_sam
 
 try:
     import wandb
@@ -155,6 +152,9 @@ def train_ddp(rank, world_size, args):
         if rank == 0:
             print(f"✓ Applying LoRA (rank={args.lora_rank}, alpha={args.lora_alpha}, dropout={args.lora_dropout})")
         
+        for param in model.sam_model.parameters():
+            param.requires_grad = False
+
         # Apply LoRA to the SAM model inside DeepAR
         apply_lora_to_sam(
             model.sam_model,
@@ -164,8 +164,8 @@ def train_ddp(rank, world_size, args):
             verbose=(rank == 0)
         )
         
-        # Freeze base model, only train LoRA parameters
-        mark_lora_trainable(model)
+        if hasattr(model.sam_model, 'no_mask_embedding'):
+            model.sam_model.no_mask_embedding.requires_grad = True
         
         if rank == 0:
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -182,8 +182,11 @@ def train_ddp(rank, world_size, args):
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
 
-    train_dataset = ARTrainingDataset(args.train_tensor_input)
-    val_dataset = ARTrainingDataset(args.val_tensor_input)
+    train_files = sorted(list(Path(args.train_input_dir).glob("*.nc")))
+    val_files = sorted(list(Path(args.val_input_dir).glob("*.nc")))
+
+    train_dataset = ARTrainingDataset(train_files)
+    val_dataset = ARTrainingDataset(val_files)
 
     train_sampler = DistributedSampler(
         train_dataset,
@@ -280,11 +283,11 @@ def train_ddp(rank, world_size, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Distributed Training Script")
     parser.add_argument('--model_type', type=str, required=True, help='Variant of the model')
-    parser.add_argument('--train_tensor_input', type=str, required=True, help='Path to training tensor file')
-    parser.add_argument('--val_tensor_input', type=str, required=True, help='Path to validation tensor file')
+    parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
+    parser.add_argument('--val_input_dir', type=str, required=True, help='Path to validation directory containing .nc files')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size per GPU')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Initial learning rate')
+    parser.add_argument('--initial_lr', type=float, default=1e-4, help='Initial learning rate')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
