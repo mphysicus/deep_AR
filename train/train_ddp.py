@@ -2,22 +2,19 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.multiprocessing as mp
 from torch.amp import GradScaler, autocast
 import argparse
 import os
 import sys
+from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deep_ar.build_deep_ar import deep_ar_model_registry
 from deep_ar.data.datasets import ARTrainingDataset
+from loss import CombinedLoss
 
 # Import LoRA utilities
-from lora.utils import (
-    apply_lora_to_sam, 
-    mark_only_lora_as_trainable as mark_lora_trainable,
-    lora_state_dict as get_lora_state_dict
-)
+from lora.utils import apply_lora_to_sam
 
 try:
     import wandb
@@ -46,7 +43,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
 
         with autocast("cuda"):
             outputs = model(images)
-            loss = criterion(outputs, masks)
+            logits = outputs['output']
+            loss = criterion(logits, masks)
         
         total_train_loss += loss.item()
 
@@ -81,7 +79,8 @@ def validate(model, dataloader, criterion, rank):
 
             with autocast("cuda"):
                 outputs = model(images)
-                loss = criterion(outputs, masks)
+                logits = outputs['output']
+                loss = criterion(logits, masks)
 
             total_val_loss += loss.item()
 
@@ -103,7 +102,7 @@ def train_ddp(rank, world_size, args):
             "model_type": args.model_type,
             "batch_size": args.batch_size,
             "epochs": args.epochs,
-            "learning_rate": args.lr,
+            "initial_learning_rate": args.initial_lr,
             "world_size": world_size,
             "optimizer": "AdamW",
             "scheduler": "CosineAnnealingLR",
@@ -133,11 +132,11 @@ def train_ddp(rank, world_size, args):
     model_builder = deep_ar_model_registry[args.model_type]
     model = model_builder(checkpoint=None)
 
-    if args.checkpoint is not None:
+    if args.original_sam_checkpoint is not None:
         if rank == 0:
-            print(f"Loading SAM's image encoder and mask decoder checkpoint from {args.checkpoint}...")
+            print(f"Loading SAM's image encoder and mask decoder checkpoint from {args.original_sam_checkpoint}...")
         
-        state_dict = torch.load(args.checkpoint, map_location=f'cuda:{rank}')
+        state_dict = torch.load(args.original_sam_checkpoint, map_location=f'cuda:{rank}')
         adapted_state_dict = {"sam_model." + k: v for k, v in state_dict.items()}
         
         load_result = model.load_state_dict(adapted_state_dict, strict=False)
@@ -155,6 +154,9 @@ def train_ddp(rank, world_size, args):
         if rank == 0:
             print(f"✓ Applying LoRA (rank={args.lora_rank}, alpha={args.lora_alpha}, dropout={args.lora_dropout})")
         
+        for param in model.sam_model.parameters():
+            param.requires_grad = False
+
         # Apply LoRA to the SAM model inside DeepAR
         apply_lora_to_sam(
             model.sam_model,
@@ -164,8 +166,8 @@ def train_ddp(rank, world_size, args):
             verbose=(rank == 0)
         )
         
-        # Freeze base model, only train LoRA parameters
-        mark_lora_trainable(model)
+        if hasattr(model.sam_model, 'no_mask_embedding'):
+            model.sam_model.no_mask_embedding.requires_grad = True
         
         if rank == 0:
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -182,8 +184,14 @@ def train_ddp(rank, world_size, args):
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
 
-    train_dataset = ARTrainingDataset(args.train_tensor_input)
-    val_dataset = ARTrainingDataset(args.val_tensor_input)
+    train_input_files = sorted(list(Path(args.train_input_dir).glob("*.nc")))
+    val_input_files = sorted(list(Path(args.val_input_dir).glob("*.nc")))
+
+    train_gt_files = sorted(list(Path(args.train_gt_dir).glob("*.nc")))
+    val_gt_files = sorted(list(Path(args.val_gt_dir).glob("*.nc")))
+    
+    train_dataset = ARTrainingDataset(input_files=train_input_files, gt_files=train_gt_files)
+    val_dataset = ARTrainingDataset(input_files=val_input_files, gt_files=val_gt_files)
 
     train_sampler = DistributedSampler(
         train_dataset,
@@ -211,14 +219,17 @@ def train_ddp(rank, world_size, args):
         num_workers=4,
         pin_memory=True
     )
-    criterion = torch.nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    criterion = CombinedLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.initial_lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max= args.epochs)
     scaler = GradScaler()
 
     # Watch model (only on rank 0 and if wandb enabled)
     if rank == 0 and use_wandb:
         wandb.watch(model, log="all", log_freq=100)
+    
+    if rank == 0 and args.checkpoint:
+        os.makedirs(args.checkpoint, exist_ok=True)
 
     best_val_loss = torch.inf
     no_improve_epochs = 0
@@ -247,7 +258,7 @@ def train_ddp(rank, world_size, args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"best_model_epoch_{epoch+1}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}.pth"
                 
                 # Save appropriate state dict based on training mode
                 if args.peft_method == 'lora':
@@ -280,18 +291,22 @@ def train_ddp(rank, world_size, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Distributed Training Script")
     parser.add_argument('--model_type', type=str, required=True, help='Variant of the model')
-    parser.add_argument('--train_tensor_input', type=str, required=True, help='Path to training tensor file')
-    parser.add_argument('--val_tensor_input', type=str, required=True, help='Path to validation tensor file')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size per GPU')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Initial learning rate')
+    parser.add_argument('--initial_lr', type=float, default=1e-4, help='Initial learning rate')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
-    parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', type=str, default=None, help='Path to save the model checkpoint')
     parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
     parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
     parser.add_argument('--wandb_project', type=str, default='deep_ar_project', help='WandB project name')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name (default: auto-generated)')
     parser.add_argument('--wandb_tags', type=str, default=None, help='Comma-separated tags for WandB run')
+    parser.add_argument('--original_sam_checkpoint', type=str, default=None, help='Path to original SAM checkpoint for initialization')
+
+    parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
+    parser.add_argument('--val_input_dir', type=str, required=True, help='Path to validation directory containing .nc files')
+    parser.add_argument('--train_gt_dir', type=str, required=True, help='Path to training ground truth directory containing .nc files')
+    parser.add_argument('--val_gt_dir', type=str, required=True, help='Path to validation ground truth directory containing .nc files')
     
     # PEFT (Parameter-Efficient Fine-Tuning) arguments
     parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora'],
