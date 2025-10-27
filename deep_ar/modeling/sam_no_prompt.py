@@ -63,7 +63,10 @@ class SamAR(nn.Module):
                 input_size=image_record["image"].shape[-2:],
                 original_size=image_record["original_size"],
             )
-            masks = masks > self.mask_threshold
+            if not self.training:
+                masks = masks > self.mask_threshold
+                print("Applied mask thresholding during inference.")
+            
             outputs.append(
                 {
                     "masks": masks,
