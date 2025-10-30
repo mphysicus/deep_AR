@@ -7,7 +7,7 @@ import numpy as np
 import xarray as xr
 from torch.utils.data import Dataset
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Union
 
 
 class ARTrainingDataset(Dataset):
@@ -27,7 +27,7 @@ class ARTrainingDataset(Dataset):
         input_files: List[Union[str, Path]],
         gt_files: List[Union[str, Path]],
         ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
-        gt_var: str = "mask",
+        gt_var: str = "ar_mask",
         time_dim: str = "time",
         ivt_mean: Tuple[float, float, float] = (250.0, 50.0, 50.0),
         ivt_std: Tuple[float, float, float] = (100.0, 75.0, 75.0),
@@ -65,7 +65,7 @@ class ARTrainingDataset(Dataset):
             print("Opening dataset files with memory mapping...")
             try:
                 self.input_datasets = [xr.open_dataset(f, chunks=self.chunk_size) for f in self.input_files]
-                self.gt_datasets = [xr.open_dataset(f, chunks=self.chunk_size) for f in self.gt_files]
+                self.gt_datasets = [xr.open_dataset(f) for f in self.gt_files]
             except Exception as e:
                 print(f"Error opening dataset files: {e}")
                 # Clean up any partially opened datasets
@@ -210,7 +210,7 @@ class ARInferenceDataset(Dataset):
     def __init__(
         self,
         input_files: List[Union[str, Path]],
-        ivt_vars: Tuple[str, str, str] = ("IVT", "IVT_u", "IVT_v"),
+        ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
         time_dim: str = "time",
         ivt_mean: Tuple[float, float, float] = (250.0, 50.0, 50.0),  
         ivt_std: Tuple[float, float, float] = (100.0, 75.0, 75.0),

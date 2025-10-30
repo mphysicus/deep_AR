@@ -37,7 +37,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
 
     for batch_idx, batch in enumerate(dataloader):
         images = batch['image'].to(rank)
-        masks = batch['mask'].to(rank)
+        masks = batch['gt_mask'].to(rank)
 
         optimizer.zero_grad()
 
@@ -75,7 +75,7 @@ def validate(model, dataloader, criterion, rank):
     with torch.no_grad():
         for batch in dataloader:
             images = batch['image'].to(rank)
-            masks = batch['mask'].to(rank)
+            masks = batch['gt_mask'].to(rank)
 
             with autocast("cuda"):
                 outputs = model(images)
