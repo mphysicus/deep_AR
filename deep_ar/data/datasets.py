@@ -26,7 +26,7 @@ class ARTrainingDataset(Dataset):
         self,
         input_files: List[Union[str, Path]],
         gt_files: List[Union[str, Path]],
-        ivt_vars: Tuple[str, str, str] = ("IVT", "IVT_u", "IVT_v"),
+        ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
         gt_var: str = "mask",
         time_dim: str = "time",
         ivt_mean: Tuple[float, float, float] = (250.0, 50.0, 50.0),

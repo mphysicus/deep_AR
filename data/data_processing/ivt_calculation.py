@@ -18,16 +18,16 @@ def calculate_ivt(input_file, output_dir):
         dp = p.diff('pressure_level')
         dp = dp.broadcast_like(q.isel(pressure_level=slice(1, None)))
         
-        ivt_u = ((q.isel(pressure_level=slice(1, None)) * u.isel(pressure_level=slice(1, None)) * dp)).sum(dim='pressure_level')
-        ivt_v = ((q.isel(pressure_level=slice(1, None)) * v.isel(pressure_level=slice(1, None)) * dp)).sum(dim='pressure_level')
+        ivtu = ((q.isel(pressure_level=slice(1, None)) * u.isel(pressure_level=slice(1, None)) * dp)).sum(dim='pressure_level')
+        ivtv = ((q.isel(pressure_level=slice(1, None)) * v.isel(pressure_level=slice(1, None)) * dp)).sum(dim='pressure_level')
 
-        ivt = np.sqrt(ivt_u**2 + ivt_v**2)
+        ivt = np.sqrt(ivtu**2 + ivtv**2)
 
         output_ds = xr.Dataset(
             {
                 'ivt': ivt / g,
-                'ivt_u': ivt_u / g,
-                'ivt_v': ivt_v / g,
+                'ivtu': ivtu / g,
+                'ivtv': ivtv / g,
             },
             coords=ds.coords
         ).rename({'valid_time': 'time'})
