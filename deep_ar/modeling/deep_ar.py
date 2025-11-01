@@ -10,11 +10,13 @@ class DeepAR(nn.Module):
     def __init__(self, 
                  sam_model: SamAR,
                  input_generator: IVT2RGB,
-                 map_reconstructor: Mask2ARMaps):
+                 map_reconstructor: Mask2ARMaps,
+                 mask_threshold: float = 0.0):
         super().__init__()
         self.sam_model = sam_model
         self.input_generator = input_generator
         self.map_reconstructor = map_reconstructor
+        self.mask_threshold = mask_threshold
 
     def forward(self,
                 x: torch.Tensor,
@@ -40,7 +42,7 @@ class DeepAR(nn.Module):
         # Step 1: Generate input features
         x = self.input_generator(x)
         if return_intermediate:
-            outputs['input_features'] = x
+            outputs['input_features'] = x.detach()
 
         # Step 2: Predict masks using SAM
         batch_size = x.shape[0]
@@ -53,13 +55,25 @@ class DeepAR(nn.Module):
         sam_outputs = self.sam_model(batched_input, multimask_output=multimask_output)
 
         #Extract masks
-        masks = torch.stack([output['masks'] for output in sam_outputs])
+        masks = torch.stack([output['masks'].squeeze(1) for output in sam_outputs])
+
         if return_intermediate:
-            outputs['masks'] = masks
-            outputs['iou_predictions'] = torch.stack([output['iou_predictions'] for output in sam_outputs])
+            outputs['masks'] = masks.detach()
+            outputs['iou_predictions'] = torch.stack([output['iou_predictions'] for output in sam_outputs]).detach()
+
+        del sam_outputs
 
         # Step 3: AR Map Reconstruction
-        reconstructed = self.maps_reconstructor(masks)
+        reconstructed = self.map_reconstructor(masks)
         outputs['output'] = reconstructed
 
         return outputs
+    
+    def get_binary_masks(self, x:torch.Tensor):
+        """
+        Get thresholded binary masks for inference/visualization.
+        """
+        with torch.no_grad():
+            outputs = self.forward(x)
+            binary_masks = (outputs['masks'] > self.mask_threshold).float()
+        return binary_masks

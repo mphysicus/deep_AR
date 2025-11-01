@@ -9,7 +9,6 @@ from .mask_decoder import MaskDecoder
 
 
 class SamAR(nn.Module):
-    mask_threshold: float = 0.0
     image_format: str = "RGB"
 
     def __init__(
@@ -28,8 +27,10 @@ class SamAR(nn.Module):
         self.embed_channel = image_encoder.neck[0].out_channels
         image_embedding_size = image_encoder.img_size // 16
         self.no_mask_embedding = nn.Parameter(torch.randn(1, self.embed_channel, image_embedding_size, image_embedding_size))
+        self.positional_encoding = nn.Parameter(torch.randn(1, self.embed_channel, image_embedding_size, image_embedding_size))
 
         nn.init.normal_(self.no_mask_embedding, mean=0.0,std=0.02)
+        nn.init.normal_(self.positional_encoding, mean=0.0, std=0.02)
 
     @property
     def device(self) -> Any:
@@ -47,13 +48,14 @@ class SamAR(nn.Module):
         image_embeddings = self.image_encoder(input_images)
 
         outputs = []
+        sparse_embeddings = torch.empty((1, 0, self.embed_channel), device=self.device)
+        
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
             dense_embeddings = self.no_mask_embedding
-            sparse_embeddings = torch.empty((1, 0, self.embed_channel), device=self.device)
 
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),
-                image_pe=None,
+                image_pe=self.positional_encoding,
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,
                 multimask_output=multimask_output,
@@ -63,9 +65,6 @@ class SamAR(nn.Module):
                 input_size=image_record["image"].shape[-2:],
                 original_size=image_record["original_size"],
             )
-            if not self.training:
-                masks = masks > self.mask_threshold
-                print("Applied mask thresholding during inference.")
             
             outputs.append(
                 {

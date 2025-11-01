@@ -23,9 +23,9 @@ class IVT2RGB(nn.Module):
         """
         Forward pass of the model.
         """
-        y = F.relu(self.conv1(x))
-        y = F.relu(self.conv2(y))
-        y = F.relu(self.conv3(y))
+        y = F.relu(self.conv1(x), inplace=True)
+        y = F.relu(self.conv2(y), inplace=True)
+        y = F.relu(self.conv3(y), inplace=True)
         y = self.conv4(y)
         y = F.sigmoid(y + x)  # Ensure output is in range [0, 1)
         return y
