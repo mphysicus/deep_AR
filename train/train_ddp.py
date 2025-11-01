@@ -36,8 +36,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
     total_train_loss = 0.0
 
     for batch_idx, batch in enumerate(dataloader):
-        images = batch['image'].to(rank)
-        masks = batch['gt_mask'].to(rank)
+        images = batch['image'].to(rank, non_blocking=True)
+        masks = batch['gt_mask'].to(rank, non_blocking=True)
 
         optimizer.zero_grad()
 

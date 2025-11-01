@@ -18,9 +18,9 @@ class Mask2ARMaps(nn.Module):
         """
         Forward pass to reconstruct AR maps from segmentation masks.
         """
-        y = F.relu(self.conv1(x))
-        y = F.relu(self.conv2(y))
-        y = F.relu(self.conv3(y))
+        y = F.relu(self.conv1(x), inplace=True)
+        y = F.relu(self.conv2(y), inplace=True)
+        y = F.relu(self.conv3(y), inplace=True)
         y = self.conv4(y)
         y = F.sigmoid(y + x)  # Ensure output is in range [0, 1)
         return y
