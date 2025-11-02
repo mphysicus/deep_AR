@@ -1,6 +1,3 @@
-#!/bin/bash -e
-# Copyright (c) Facebook, Inc. and its affiliates.
-
 {
   black --version | grep -E "23\." > /dev/null
 } || {
