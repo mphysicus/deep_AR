@@ -208,4 +208,5 @@ __marimo__/
 
 # climate files
 *.nc
-/train/wandb_sweep.yaml
+/train/wandb_sweep_1.yaml
+/train/wandb/*

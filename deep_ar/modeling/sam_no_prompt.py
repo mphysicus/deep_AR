@@ -47,6 +47,8 @@ class SamAR(nn.Module):
         input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
         image_embeddings = self.image_encoder(input_images)
 
+        del input_images
+
         outputs = []
         sparse_embeddings = torch.empty((1, 0, self.embed_channel), device=self.device)
         
@@ -70,7 +72,6 @@ class SamAR(nn.Module):
                 {
                     "masks": masks,
                     "iou_predictions": iou_predictions,
-                    "low_res_logits": low_res_masks,
                 }
             )
         return outputs

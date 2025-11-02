@@ -39,7 +39,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
         images = batch['image'].to(rank, non_blocking=True)
         masks = batch['gt_mask'].to(rank, non_blocking=True)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         with autocast("cuda"):
             outputs = model(images)
@@ -49,6 +49,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
         total_train_loss += loss.item()
 
         scaler.scale(loss).backward()
+
+        del outputs, logits
         scaler.step(optimizer)
         scaler.update()
 
@@ -74,8 +76,8 @@ def validate(model, dataloader, criterion, rank):
 
     with torch.no_grad():
         for batch in dataloader:
-            images = batch['image'].to(rank)
-            masks = batch['gt_mask'].to(rank)
+            images = batch['image'].to(rank, non_blocking=True)
+            masks = batch['gt_mask'].to(rank, non_blocking=True)
 
             with autocast("cuda"):
                 outputs = model(images)
@@ -83,6 +85,8 @@ def validate(model, dataloader, criterion, rank):
                 loss = criterion(logits, masks)
 
             total_val_loss += loss.item()
+
+            del outputs, logits, loss
 
     avg_val_loss = total_val_loss / len(dataloader)
 
@@ -96,7 +100,7 @@ def train_ddp(rank, world_size, args):
     setup_ddp(rank, world_size)
 
     # Initialize wandb only on rank 0 and if enabled
-    use_wandb = args.use_wandb and WANDB_AVAILABLE
+    use_wandb = (args.use_wandb.lower() == 'true') and WANDB_AVAILABLE
     if rank == 0 and use_wandb:
         config_dict = {
             "model_type": args.model_type,
@@ -107,6 +111,7 @@ def train_ddp(rank, world_size, args):
             "optimizer": "AdamW",
             "scheduler": "CosineAnnealingLR",
             "peft_method": args.peft_method,
+            "use_gradient_checkpointing": args.use_gradient_checkpointing,
         }
         if args.peft_method in ['lora']:
             config_dict.update({
@@ -130,7 +135,7 @@ def train_ddp(rank, world_size, args):
 
     #Build model
     model_builder = deep_ar_model_registry[args.model_type]
-    model = model_builder(checkpoint=None)
+    model = model_builder(checkpoint=None, use_gradient_checkpointing=args.use_gradient_checkpointing)
 
     if args.original_sam_checkpoint is not None:
         if rank == 0:
@@ -297,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to save the model checkpoint')
     parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
-    parser.add_argument('--use_wandb', action='store_true', help='Use Weights & Biases for logging')
+    parser.add_argument('--use_wandb', type=str, default='False', help='Use Weights & Biases for logging')
     parser.add_argument('--wandb_project', type=str, default='deep_ar_project', help='WandB project name')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name (default: auto-generated)')
     parser.add_argument('--wandb_tags', type=str, default=None, help='Comma-separated tags for WandB run')
@@ -314,6 +319,8 @@ if __name__ == "__main__":
     parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank (default: 8)')
     parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha scaling (default: 16)')
     parser.add_argument('--lora_dropout', type=float, default=0.0, help='LoRA dropout rate (default: 0.0)')
+
+    parser.add_argument('--use_gradient_checkpointing', type=lambda x: x.lower() == 'true', default=True, help='Use gradient checkpointing to save memory')
 
     args = parser.parse_args()
 

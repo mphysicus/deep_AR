@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from typing import Optional, Tuple, Type
 
@@ -27,6 +28,7 @@ class ImageEncoderViT(nn.Module):
         rel_pos_zero_init: bool = True,
         window_size: int = 0,
         global_attn_indexes: Tuple[int, ...] = (),
+        use_gradient_checkpointing: bool = False,
     ) -> None:
         """
         Args:
@@ -96,6 +98,7 @@ class ImageEncoderViT(nn.Module):
             ),
             LayerNorm2d(out_chans),
         )
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.patch_embed(x)
@@ -103,8 +106,10 @@ class ImageEncoderViT(nn.Module):
             x = x + self.pos_embed
 
         for blk in self.blocks:
-            x = blk(x)
-
+            if self.use_gradient_checkpointing and self.training:
+                x = checkpoint(blk, x, use_reentrant=False)
+            else:
+                x = blk(x)
         x = self.neck(x.permute(0, 3, 1, 2))
 
         return x

@@ -61,7 +61,7 @@ class DeepAR(nn.Module):
             outputs['masks'] = masks.detach()
             outputs['iou_predictions'] = torch.stack([output['iou_predictions'] for output in sam_outputs]).detach()
 
-        del sam_outputs
+        del sam_outputs, batched_input
 
         # Step 3: AR Map Reconstruction
         reconstructed = self.map_reconstructor(masks)
