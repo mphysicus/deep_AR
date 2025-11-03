@@ -29,8 +29,8 @@ class ARTrainingDataset(Dataset):
         ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
         gt_var: str = "ar_mask",
         time_dim: str = "time",
-        ivt_mean: Tuple[float, float, float] = (250.0, 50.0, 50.0),
-        ivt_std: Tuple[float, float, float] = (100.0, 75.0, 75.0),
+        ivt_mean: Tuple[float, float, float] = (117.935, -14.164, -1.383),
+        ivt_std: Tuple[float, float, float] = (125.184, 143.868, 93.162),
         use_memory_mapping: bool = True,
         chunk_size = 'auto'
     ):
