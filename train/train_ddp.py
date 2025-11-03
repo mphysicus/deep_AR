@@ -162,17 +162,41 @@ def train_ddp(rank, world_size, args):
         for param in model.sam_model.parameters():
             param.requires_grad = False
 
+        LORA_TARGET_MODULES = [
+            "attn.qkv",
+            "attn.proj",
+            "mlp.lin1",  # Present in both image encoder and mask decoder
+            "mlp.lin2",  # Present in both image encoder and mask decoder
+
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "out_proj",
+
+            "output_hypernetworks_mlps",
+            "iou_prediction_head",
+        ]
         # Apply LoRA to the SAM model inside DeepAR
         apply_lora_to_sam(
             model.sam_model,
             rank=args.lora_rank,
             alpha=args.lora_alpha,
             dropout=args.lora_dropout,
-            verbose=(rank == 0)
+            verbose=(rank == 0),
+            target_layers= LORA_TARGET_MODULES
         )
         
         if hasattr(model.sam_model, 'no_mask_embedding'):
             model.sam_model.no_mask_embedding.requires_grad = True
+
+        if hasattr(model.sam_model, 'positional_encoding'):
+            model.sam_model.positional_encoding.requires_grad = True
+
+        if hasattr(model.sam_model, 'image_encoder') and hasattr(model.sam_model.image_encoder, 'patch_embed'):
+            for param in model.sam_model.image_encoder.patch_embed.parameters():
+                param.requires_grad = True
+            if rank == 0:
+                print("✓ Made patch embedding parameters (in ViT) trainable.")
         
         if rank == 0:
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -187,7 +211,7 @@ def train_ddp(rank, world_size, args):
         raise ValueError(f"Unknown PEFT method: {args.peft_method}. Choose from: none, lora")
 
     model = model.to(rank)
-    model = DDP(model, device_ids=[rank])
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
     train_input_files = sorted(list(Path(args.train_input_dir).glob("*.nc")))
     val_input_files = sorted(list(Path(args.val_input_dir).glob("*.nc")))
@@ -239,6 +263,8 @@ def train_ddp(rank, world_size, args):
     best_val_loss = torch.inf
     no_improve_epochs = 0
 
+    stop_training_signal = torch.tensor(0, device=rank)
+
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
         epoch_loss = train_one_epoch(model, train_loader, optimizer, criterion, rank, scaler, epoch, use_wandb)
@@ -263,7 +289,7 @@ def train_ddp(rank, world_size, args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}_batch{args.batch_size}.pth"
                 
                 # Save appropriate state dict based on training mode
                 if args.peft_method == 'lora':
@@ -283,7 +309,14 @@ def train_ddp(rank, world_size, args):
                 no_improve_epochs += 1
                 if no_improve_epochs >= args.early_stopping_patience:
                     print(f"No improvement for {args.early_stopping_patience} epochs, stopping training.")
-                    break
+                    
+                    stop_training_signal = torch.tensor(1, device=rank)
+        dist.broadcast(stop_training_signal, src=0)
+        if stop_training_signal.item() == 1:
+            if rank != 0:
+                print(f"Rank {rank} received stop training signal.")
+            break
+
 
         scheduler.step()
     
