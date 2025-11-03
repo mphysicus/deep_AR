@@ -106,10 +106,13 @@ def train_ddp(rank, world_size, args):
             "model_type": args.model_type,
             "batch_size": args.batch_size,
             "epochs": args.epochs,
-            "initial_learning_rate": args.initial_lr,
+            "pretrained_lr":args.pretrained_lr,
+            "scratch_lr": args.scratch_lr,
+            "warmup_epochs": args.warmup_epochs,
+            "warmup_start_lr": args.warmup_start_lr,
             "world_size": world_size,
             "optimizer": "AdamW",
-            "scheduler": "CosineAnnealingLR",
+            "scheduler": "Warmup + CosineAnnealingLR",
             "peft_method": args.peft_method,
             "use_gradient_checkpointing": args.use_gradient_checkpointing,
         }
@@ -213,6 +216,41 @@ def train_ddp(rank, world_size, args):
     model = model.to(rank)
     model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
+    params_scratch = []
+    params_pretrained = []
+
+    scratch_param_keywords = [
+        'patch_embed',
+        'positional_encoding',
+        'no_mask_embedding',
+        'input_generator',
+        'map_reconstructor'
+    ]
+    if  rank == 0:
+        print(f"Building parameter groups for mode: {args.peft_method}...")
+
+    for name, param in model.module.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        is_scratch = any(keyword in name for keyword in scratch_param_keywords)
+
+        if is_scratch:
+            params_scratch.append(param)
+        else:
+            params_pretrained.append(param)
+    
+    if rank == 0:
+        print(f"✓ Found {len(params_pretrained)} 'pre-trained' parameter tensors.")
+        print(f"✓ Found {len(params_scratch)} 'from scratch' parameter tensors.")
+        print(f"  Pre-trained LR (LoRA or SAM blocks): {args.pretrained_lr}")
+        print(f"  Scratch LR (CNNs, Embeds): {args.scratch_lr} (warming up from {args.warmup_start_lr} for {args.warmup_epochs} epochs)")
+
+    param_groups = [
+        {'params': params_pretrained, 'lr': args.pretrained_lr, 'name': 'pretrained'},
+        {'params': params_scratch, 'lr': args.scratch_lr, 'name': 'scratch'},
+    ]
+
     train_input_files = sorted(list(Path(args.train_input_dir).glob("*.nc")))
     val_input_files = sorted(list(Path(args.val_input_dir).glob("*.nc")))
 
@@ -249,8 +287,39 @@ def train_ddp(rank, world_size, args):
         pin_memory=True
     )
     criterion = CombinedLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.initial_lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max= args.epochs)
+    optimizer = torch.optim.AdamW(param_groups)
+
+    # LR scheduler with warmup
+    cosine_epochs = max(1, args.epochs - args.warmup_epochs)
+    start_lr_factor = args.warmup_start_lr / args.scratch_lr
+
+    def lr_lambda_pretrained(epoch):
+        """
+        LR scheduler for pre-trained parameters.
+        Constant during warmup, cosine annealing afterwards.
+        """
+        if epoch < args.warmup_epochs:
+            return 1.0
+        else:
+            progress = (epoch - args.warmup_epochs) / cosine_epochs
+            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress))).item()
+        
+    def lr_lambda_scratch(epoch):
+        """
+        LR scheduler for parameters trained from scratch.
+        Linear warmup, then cosine annealing.
+        """
+        if epoch < args.warmup_epochs:
+            #Linear warmup
+            if args.warmup_epochs == 0: return 1.0 #Avoid division by zero
+            return start_lr_factor + (1.0 - start_lr_factor) * (epoch / args.warmup_epochs)
+        else:
+            progress = (epoch - args.warmup_epochs) / cosine_epochs
+            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress))).item()
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
+                                                  lr_lambda=[lr_lambda_pretrained, lr_lambda_scratch])
+    
     scaler = GradScaler()
 
     # Watch model (only on rank 0 and if wandb enabled)
@@ -267,10 +336,15 @@ def train_ddp(rank, world_size, args):
 
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
+
+        current_lr_pretrained = optimizer.param_groups[0]['lr']
+        current_lr_scratch = optimizer.param_groups[1]['lr']
+
         epoch_loss = train_one_epoch(model, train_loader, optimizer, criterion, rank, scaler, epoch, use_wandb)
 
         if rank == 0:
             print(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss}")
+            print(f"  Learning Rates - Pretrained: {current_lr_pretrained}, Scratch: {current_lr_scratch}")
 
         val_loss = validate(model, val_loader, criterion, rank)
 
@@ -283,7 +357,8 @@ def train_ddp(rank, world_size, args):
                     "epoch": epoch + 1,
                     "train_loss": epoch_loss,
                     "val_loss": val_loss,
-                    "learning_rate": scheduler.get_last_lr()[0]
+                    "lr_pretrained": current_lr_pretrained,
+                    "lr_scratch": current_lr_scratch
                 })
            
             if val_loss < best_val_loss:
@@ -331,7 +406,6 @@ if __name__ == "__main__":
     parser.add_argument('--model_type', type=str, required=True, help='Variant of the model')
     parser.add_argument('--batch_size', type=int, default=8, help='Batch size per GPU')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--initial_lr', type=float, default=1e-4, help='Initial learning rate')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to save the model checkpoint')
     parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
@@ -340,6 +414,11 @@ if __name__ == "__main__":
     parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name (default: auto-generated)')
     parser.add_argument('--wandb_tags', type=str, default=None, help='Comma-separated tags for WandB run')
     parser.add_argument('--original_sam_checkpoint', type=str, default=None, help='Path to original SAM checkpoint for initialization')
+
+    parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='Learning rate for pre-trained parameters')
+    parser.add_argument('--scratch_lr', type=float, default=1e-4, help='Learning rate for scratch parameters')
+    parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of warmup epochs for scratch parameters')
+    parser.add_argument('--warmup_start_lr', type=float, default=1e-6, help='Starting learning rate for warmup of scratch parameters')
 
     parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
     parser.add_argument('--val_input_dir', type=str, required=True, help='Path to validation directory containing .nc files')

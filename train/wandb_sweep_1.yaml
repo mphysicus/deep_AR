@@ -1,0 +1,54 @@
+# Weights & Biases Sweep Configuration for DeepAR Hyperparameter Tuning
+program: train_ddp.py
+method: random
+entity: deep_ar
+project: deep_ar_vit_l
+metric:
+  name: val_loss
+  goal: minimize
+parameters:
+  # --- Fixed Parameters for the Sweep ---
+  model_type:
+    value: "vit_l" 
+  train_input_dir:
+    value: "/storage/prakhar/Sem_Project/data_files/realigned_merged_ivt/train_1"
+  val_input_dir:
+    value: "/storage/prakhar/Sem_Project/data_files/realigned_merged_ivt/validation"
+  train_gt_dir:
+    value: "/storage/prakhar/Sem_Project/data_files/pikart/train_1"
+  val_gt_dir:
+    value: "/storage/prakhar/Sem_Project/data_files/pikart/validation"
+  original_sam_checkpoint:
+    value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
+  checkpoint:
+    value: "/storage/prakhar/Sem_Project/weights/finetuned_weights"
+  peft_method:
+    value: "lora"
+  epochs:
+    value: 45
+  early_stopping_patience:
+    value: 15
+  use_wandb:
+    value: True
+  pretrained_lr:
+    value: 1e-5
+  scratch_lr:
+    value: 1e-4
+  warmup_epochs:
+    value: 5
+  warmup_start_lr:
+    value: 1e-6
+  use_gradient_checkpointing:
+    value: True
+  lora_alpha:
+    value: 32
+  # --- Hyperparameters to Tune ---
+
+  lora_rank:
+    values: [8, 12, 16, 20]
+
+  lora_dropout:
+    values: [0.0, 0.05, 0.1]
+  
+  batch_size:
+    values: [9, 12, 15]
