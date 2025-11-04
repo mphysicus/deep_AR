@@ -364,7 +364,7 @@ def train_ddp(rank, world_size, args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}_batch{args.batch_size}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_batch{args.batch_size}_val_loss{val_loss}.pth"
                 
                 # Save appropriate state dict based on training mode
                 if args.peft_method == 'lora':

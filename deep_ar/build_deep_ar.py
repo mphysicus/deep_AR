@@ -29,10 +29,22 @@ def build_deep_ar_vit_l(checkpoint=None, use_gradient_checkpointing=True):
         use_gradient_checkpointing=use_gradient_checkpointing,
     )
 
+def build_deep_ar_vit_b(checkpoint=None, use_gradient_checkpointing=True):
+    return _build_deep_ar(
+        encoder_embed_dim=768,
+        encoder_depth=12,
+        encoder_num_heads=12,
+        encoder_global_attn_indexes=[2, 5, 8, 11],
+        checkpoint=checkpoint,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+    )
+
+
 deep_ar_model_registry = {
     "default": build_deep_ar_vit_h,
     "vit_h": build_deep_ar_vit_h,
     "vit_l": build_deep_ar_vit_l,
+    "vit_b": build_deep_ar_vit_b
 }
 
 def _build_deep_ar(
