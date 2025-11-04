@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deep_ar.build_deep_ar import deep_ar_model_registry
 from deep_ar.data.datasets import ARTrainingDataset
 from loss import CombinedLoss
+from datetime import timedelta
 
 # Import LoRA utilities
 from lora.utils import apply_lora_to_sam
@@ -23,7 +24,7 @@ except ImportError:
     WANDB_AVAILABLE = False
 
 def setup_ddp():
-    dist.init_process_group("nccl", init_method="env://")
+    dist.init_process_group("nccl", init_method="env://", timeout=timedelta(minutes=30))
     rank = int(os.environ["RANK"])
     world_size = int(os.environ['WORLD_SIZE'])
     local_rank = int(os.environ['LOCAL_RANK'])
