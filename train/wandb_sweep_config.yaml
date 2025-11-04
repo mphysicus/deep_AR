@@ -1,8 +1,13 @@
 # Weights & Biases Sweep Configuration for DeepAR Hyperparameter Tuning
-program: train_ddp.py
+program: launch.sh
 method: random
 entity: deep_ar
-project: deep_ar_vit_l
+project: deep_ar_vit_l_a30
+command:
+  - ${env}
+  - bash
+  - ${program}
+  - ${args}
 metric:
   name: val_loss
   goal: minimize
@@ -51,4 +56,4 @@ parameters:
     values: [0.0, 0.05, 0.1]
   
   batch_size:
-    values: [9, 12, 15]
+    values: [6, 12]
