@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deep_ar.build_deep_ar import deep_ar_model_registry
 from deep_ar.data.datasets import ARTrainingDataset
 from loss import CombinedLoss
+from datetime import timedelta
 
 # Import LoRA utilities
 from lora.utils import apply_lora_to_sam
@@ -22,22 +23,27 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
-def setup_ddp(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)
+def setup_ddp():
+    dist.init_process_group("nccl", init_method="env://", timeout=timedelta(minutes=30))
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ['WORLD_SIZE'])
+    local_rank = int(os.environ['LOCAL_RANK'])
+
+    torch.cuda.set_device(local_rank)
+    if rank == 0:
+        print(f"DDP initialized: world_size={world_size}, local_rank={local_rank}, rank={rank}")
+    return rank, world_size, local_rank
 
 def cleanup_ddp():
     dist.destroy_process_group()
 
-def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch, use_wandb):
+def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, scaler, epoch, use_wandb):
     model.train()
     total_train_loss = 0.0
 
     for batch_idx, batch in enumerate(dataloader):
-        images = batch['image'].to(rank, non_blocking=True)
-        masks = batch['gt_mask'].to(rank, non_blocking=True)
+        images = batch['image'].to(local_rank, non_blocking=True)
+        masks = batch['gt_mask'].to(local_rank, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -67,7 +73,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, rank, scaler, epoch
 
     return total_train_loss / len(dataloader)
 
-def validate(model, dataloader, criterion, rank):
+def validate(model, dataloader, criterion, local_rank, rank):
     """
     Validate the model on the validation dataset.
     """
@@ -76,8 +82,8 @@ def validate(model, dataloader, criterion, rank):
 
     with torch.no_grad():
         for batch in dataloader:
-            images = batch['image'].to(rank, non_blocking=True)
-            masks = batch['gt_mask'].to(rank, non_blocking=True)
+            images = batch['image'].to(local_rank, non_blocking=True)
+            masks = batch['gt_mask'].to(local_rank, non_blocking=True)
 
             with autocast("cuda"):
                 outputs = model(images)
@@ -91,13 +97,30 @@ def validate(model, dataloader, criterion, rank):
     avg_val_loss = total_val_loss / len(dataloader)
 
     #Synchronize the validation loss across all processes
-    avg_val_loss_tensor = torch.tensor(avg_val_loss, device=rank)
+    avg_val_loss_tensor = torch.tensor(avg_val_loss, device=local_rank)
     dist.all_reduce(avg_val_loss_tensor, op=dist.ReduceOp.AVG)
 
     return avg_val_loss_tensor.item()
 
-def train_ddp(rank, world_size, args):
-    setup_ddp(rank, world_size)
+def train_ddp(args):
+    rank, world_size, local_rank = setup_ddp()
+
+    if args.batch_size % world_size != 0:
+        if rank == 0:
+            print(f"Warning: Global batch size {args.batch_size} is not divisible by world size {world_size}.")
+            print("Rounding down to nearest divisible batch size.")
+    
+    per_gpu_batch_size = args.batch_size // world_size
+
+    if per_gpu_batch_size == 0:
+        raise ValueError(f"Per-GPU batch size is zero. Increase global batch size {args.batch_size} or reduce world size {world_size}.")
+    
+    if rank == 0:
+        print(f"--- Batch Size ---")
+        print(f"  Global batch size: {args.batch_size}")
+        print(f"  World size (GPUs): {world_size}")
+        print(f"  Calculated per-GPU batch size: {per_gpu_batch_size}")
+        print(f"------------------")
 
     # Initialize wandb only on rank 0 and if enabled
     use_wandb = (args.use_wandb.lower() == 'true') and WANDB_AVAILABLE
@@ -144,7 +167,7 @@ def train_ddp(rank, world_size, args):
         if rank == 0:
             print(f"Loading SAM's image encoder and mask decoder checkpoint from {args.original_sam_checkpoint}...")
         
-        state_dict = torch.load(args.original_sam_checkpoint, map_location=f'cuda:{rank}')
+        state_dict = torch.load(args.original_sam_checkpoint, map_location=f'cuda:{local_rank}')
         adapted_state_dict = {"sam_model." + k: v for k, v in state_dict.items()}
         
         load_result = model.load_state_dict(adapted_state_dict, strict=False)
@@ -213,8 +236,8 @@ def train_ddp(rank, world_size, args):
     else:
         raise ValueError(f"Unknown PEFT method: {args.peft_method}. Choose from: none, lora")
 
-    model = model.to(rank)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+    model = model.to(local_rank)
+    model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
     params_scratch = []
     params_pretrained = []
@@ -274,14 +297,14 @@ def train_ddp(rank, world_size, args):
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=per_gpu_batch_size,
         sampler=train_sampler,
         num_workers=4,
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
+        batch_size=per_gpu_batch_size,
         sampler=val_sampler,
         num_workers=4,
         pin_memory=True
@@ -332,7 +355,7 @@ def train_ddp(rank, world_size, args):
     best_val_loss = torch.inf
     no_improve_epochs = 0
 
-    stop_training_signal = torch.tensor(0, device=rank)
+    stop_training_signal = torch.tensor(0, device=local_rank)
 
     for epoch in range(args.epochs):
         train_sampler.set_epoch(epoch)
@@ -340,13 +363,15 @@ def train_ddp(rank, world_size, args):
         current_lr_pretrained = optimizer.param_groups[0]['lr']
         current_lr_scratch = optimizer.param_groups[1]['lr']
 
-        epoch_loss = train_one_epoch(model, train_loader, optimizer, criterion, rank, scaler, epoch, use_wandb)
+        epoch_loss = train_one_epoch(model, train_loader, optimizer, criterion, 
+                                     local_rank, rank, scaler, epoch, use_wandb)
 
         if rank == 0:
             print(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss}")
             print(f"  Learning Rates - Pretrained: {current_lr_pretrained}, Scratch: {current_lr_scratch}")
 
-        val_loss = validate(model, val_loader, criterion, rank)
+        val_loss = validate(model, val_loader, criterion, 
+                            local_rank, rank)
 
         if rank == 0:
             print(f"Epoch {epoch+1}/{args.epochs}, Validation Loss: {val_loss}")
@@ -364,7 +389,7 @@ def train_ddp(rank, world_size, args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_rank{args.lora_rank}_batch{args.batch_size}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_batch{args.batch_size}_val_loss{val_loss}.pth"
                 
                 # Save appropriate state dict based on training mode
                 if args.peft_method == 'lora':
@@ -385,7 +410,7 @@ def train_ddp(rank, world_size, args):
                 if no_improve_epochs >= args.early_stopping_patience:
                     print(f"No improvement for {args.early_stopping_patience} epochs, stopping training.")
                     
-                    stop_training_signal = torch.tensor(1, device=rank)
+                    stop_training_signal.fill_(1)
         dist.broadcast(stop_training_signal, src=0)
         if stop_training_signal.item() == 1:
             if rank != 0:
@@ -404,11 +429,10 @@ def train_ddp(rank, world_size, args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Distributed Training Script")
     parser.add_argument('--model_type', type=str, required=True, help='Variant of the model')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size per GPU')
+    parser.add_argument('--batch_size', type=int, default=8, help='Global batch size across all GPUs')
     parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to save the model checkpoint')
-    parser.add_argument('--world_size', type=int, default=torch.cuda.device_count(), help='Number of GPUs to use')
     parser.add_argument('--use_wandb', type=str, default='False', help='Use Weights & Biases for logging')
     parser.add_argument('--wandb_project', type=str, default='deep_ar_project', help='WandB project name')
     parser.add_argument('--wandb_run_name', type=str, default=None, help='WandB run name (default: auto-generated)')
@@ -436,7 +460,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    mp.spawn(train_ddp,
-             args=(args.world_size, args),
-             nprocs=args.world_size,
-             join=True)
+    train_ddp(args)

@@ -62,7 +62,7 @@ class ARTrainingDataset(Dataset):
             raise ValueError(f"Number of input files ({len(self.input_files)}) must match number of GT files ({len(self.gt_files)})")
         
         if self.use_memory_mapping:
-            print("Opening dataset files with memory mapping...")
+            print("\nOpening dataset files with memory mapping...")
             try:
                 self.input_datasets = [xr.open_dataset(f, chunks=self.chunk_size) for f in self.input_files]
                 self.gt_datasets = [xr.open_dataset(f) for f in self.gt_files]
