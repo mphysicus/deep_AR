@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 
 from .image_encoder import ImageEncoderViT
 from .mask_decoder import MaskDecoder
+from .position_embed import PositionEmbeddingRandom
 
 
 class SamAR(nn.Module):
@@ -26,11 +27,12 @@ class SamAR(nn.Module):
 
         self.embed_channel = image_encoder.neck[0].out_channels
         image_embedding_size = image_encoder.img_size // 16
+        self.pe_layer = PositionEmbeddingRandom(self.embed_channel//2)
         self.no_mask_embedding = nn.Parameter(torch.randn(1, self.embed_channel, image_embedding_size, image_embedding_size))
-        self.positional_encoding = nn.Parameter(torch.randn(1, self.embed_channel, image_embedding_size, image_embedding_size))
-
+    
         nn.init.normal_(self.no_mask_embedding, mean=0.0,std=0.02)
-        nn.init.normal_(self.positional_encoding, mean=0.0, std=0.02)
+
+        self.image_embedding_size_tuple = (image_embedding_size, image_embedding_size)
 
     @property
     def device(self) -> Any:
@@ -51,13 +53,14 @@ class SamAR(nn.Module):
 
         outputs = []
         sparse_embeddings = torch.empty((1, 0, self.embed_channel), device=self.device)
+        image_pe = self.pe_layer(self.image_embedding_size_tuple).unsqueeze(0)
         
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
             dense_embeddings = self.no_mask_embedding
 
             low_res_masks, iou_predictions = self.mask_decoder(
                 image_embeddings=curr_embedding.unsqueeze(0),
-                image_pe=self.positional_encoding,
+                image_pe=image_pe,
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,
                 multimask_output=multimask_output,
