@@ -3,14 +3,13 @@ CNN Model to generate 3 channel images for the modified SAM model to generate se
 It receives 1024 x 1024 dimensional tensor arrays as input and outputs 3 channel RGB images.
 """
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
     
 class IVT2RGB(nn.Module):
     """
     CNN model to convert IVT data to RGB images.
-    The output is a 3 dimensional tensor with shape (3, 1024, 1024).
+    The output is a 3 dimensional tensor with same spatial dimensions as input.
     """
     def __init__(self):
         super().__init__()
@@ -27,5 +26,5 @@ class IVT2RGB(nn.Module):
         y = F.relu(self.conv2(y), inplace=True)
         y = F.relu(self.conv3(y), inplace=True)
         y = self.conv4(y)
-        y = F.sigmoid(y + x)  # Ensure output is in range [0, 1)
+        y = F.sigmoid(y + x) * 255.0 # Ensure output is in range [0, 255]
         return y
