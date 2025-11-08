@@ -5,6 +5,7 @@ It receives 1024 x 1024 dimensional tensor arrays as input and outputs 3 channel
 
 import torch.nn as nn
 import torch.nn.functional as F
+from .common import LayerNorm2d
     
 class IVT2RGB(nn.Module):
     """
@@ -14,8 +15,11 @@ class IVT2RGB(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 16, kernel_size=7, stride=1, padding='same')
+        self.norm1 = LayerNorm2d(16)
         self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=1, padding='same')
+        self.norm2 = LayerNorm2d(32)
         self.conv3 = nn.Conv2d(32, 16, kernel_size=3, stride=1, padding='same')
+        self.norm3 = LayerNorm2d(16)
         self.conv4 = nn.Conv2d(16, 3, kernel_size=1, stride=1, padding='same')
 
     def forward(self, x):

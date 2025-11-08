@@ -56,4 +56,4 @@ parameters:
     values: [0.0, 0.05, 0.1]
   
   batch_size:
-    values: [6, 12]
+    values: [6, 12, 18]

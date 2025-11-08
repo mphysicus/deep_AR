@@ -55,7 +55,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, s
         total_train_loss += loss.item()
 
         scaler.scale(loss).backward()
-
+        
         del outputs, logits
         scaler.step(optimizer)
         scaler.update()
@@ -416,7 +416,6 @@ def train_ddp(args):
             if rank != 0:
                 print(f"Rank {rank} received stop training signal.")
             break
-
 
         scheduler.step()
     
