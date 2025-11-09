@@ -16,8 +16,6 @@ class SamAR(nn.Module):
         self,
         image_encoder: ImageEncoderViT,
         mask_decoder: MaskDecoder,
-        pixel_mean: List[float] = [123.675, 116.28, 103.53],
-        pixel_std: List[float] = [58.395, 57.12, 57.375],
     ) -> None:
         """
         SAM Model without prompt encoder. It instead uses a learned no-mask embedding in its place.
@@ -26,9 +24,6 @@ class SamAR(nn.Module):
         super().__init__()
         self.image_encoder = image_encoder
         self.mask_decoder = mask_decoder
-
-        self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(-1, 1, 1), False)
-        self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(-1, 1, 1), False)
 
         self.embed_channel = image_encoder.neck[0].out_channels
         image_embedding_size = image_encoder.img_size // 16
@@ -117,9 +112,7 @@ class SamAR(nn.Module):
 
     def preprocess(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize pixel values and pad to a square input."""
-        # Normalize colors
-        x = (x - self.pixel_mean) / self.pixel_std
-        
+
         # Pad to image_encoder.img_size (1024x1024)
         h, w = x.shape[-2:]
         padh = self.image_encoder.img_size - h
