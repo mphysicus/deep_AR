@@ -128,22 +128,23 @@ def get_lora_model_from_pretrained(
     mark_only_lora_as_trainable(model)
     return model
 
-def print_trainable_parameters(model: nn.Module) -> None:
-    """
-    Print the number of trainable parameters in the model.
-    """
-    trainable_params = 0
-    all_params = 0
-    lora_params = 0
-
-    for name, param in model.named_parameters():
-        all_params += param.numel()
-        if param.requires_grad:
-            trainable_params += param.numel()
-        if 'lora_' in name:
-            lora_params += param.numel()
+def get_adalora_internal_metrics(model: nn.Module) -> Dict[str, float]:
+    """Calculates AdaLoRA internal metrics (ranks, per-layer loss) for logging."""
+    metrics_dict = {}
+    total_rank = 0
+    with torch.no_grad(): # Ensure no gradients are computed
+        for n, p in model.named_parameters():
+            if "lora_E" in n: # This is the singular value vector from SVDLinear
+                rank = (p.data.abs() > 0.0).sum().item()
+                metrics_dict[f"Ranknum/{n}"] = rank
+                total_rank += rank
+            
+            # Calculate per-layer orthogonal regularization
+            if "lora_A" in n or "lora_B" in n:
+                para_cov = p @ p.T if "lora_A" in n else p.T @ p
+                I = torch.eye(*para_cov.size(), out=torch.empty_like(para_cov))
+                orth_regu = torch.norm(para_cov - I, p="fro")
+                metrics_dict[f"Orth_regu_loss/{n}"] = orth_regu.item()
     
-    print(f"Trainable parameters: {trainable_params:,} ||"
-          f"All params: {all_params:,} ||"
-          f"Trainable%: {100*trainable_params/all_params:.2f}% ||"
-          f"LoRA params: {lora_params:,}")
+    metrics_dict["Budget/total_rank"] = total_rank
+    return metrics_dict

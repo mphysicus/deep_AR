@@ -14,8 +14,13 @@ from deep_ar.data.datasets import ARTrainingDataset
 from loss import CombinedLoss
 from datetime import timedelta
 
+from scheduler import get_scheduler
+
 # Import LoRA utilities
 from lora.utils import apply_lora_to_sam
+
+from adalora.utils import convert_linear_to_adalora, get_adalora_internal_metrics
+from adalora.adalora import RankAllocator, compute_orth_regu
 
 try:
     import wandb
@@ -37,11 +42,13 @@ def setup_ddp():
 def cleanup_ddp():
     dist.destroy_process_group()
 
-def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, scaler, epoch, use_wandb):
+def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, scaler, epoch, use_wandb, rank_allocator, args):
     model.train()
     total_train_loss = 0.0
 
     for batch_idx, batch in enumerate(dataloader):
+        global_step = epoch * len(dataloader) + batch_idx
+
         images = batch['image'].to(local_rank, non_blocking=True)
         masks = batch['gt_mask'].to(local_rank, non_blocking=True)
 
@@ -51,10 +58,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, s
             outputs = model(images)
             logits = outputs['output']
             loss = criterion(logits, masks)
-        
+
+            if args.peft_method == 'adalora' and rank_allocator is not None:
+                regu_loss = compute_orth_regu(model.module, args.adalora_orth_reg_weight)
+                loss = loss + regu_loss
+
         total_train_loss += loss.item()
 
         scaler.scale(loss).backward()
+
+        if args.peft_method == 'adalora' and rank_allocator is not None:
+            scaler.unscale_(optimizer)
+            rank_allocator.update_and_mask(model.module, global_step)
         
         del outputs, logits
         scaler.step(optimizer)
@@ -66,10 +81,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, s
             
             # Log batch-level metrics to wandb if enabled
             if use_wandb:
-                wandb.log({
+                log_dict = {
                     "batch_loss": loss.item(),
-                    "batch": epoch * len(dataloader) + batch_idx
-                })
+                    "batch": global_step
+                }
+                if args.peft_method == 'adalora':
+                    if 'regu_loss' in locals():
+                        log_dict["adalora_regu_loss_avg"] = regu_loss.item()
+                    
+                    internal_metrics = get_adalora_internal_metrics(model.module)
+                    log_dict.update(internal_metrics)
+
+                wandb.log(log_dict)
 
     return total_train_loss / len(dataloader)
 
@@ -144,6 +167,16 @@ def train_ddp(args):
                 "lora_rank": args.lora_rank,
                 "lora_alpha": args.lora_alpha,
                 "lora_dropout": args.lora_dropout,
+            })
+        elif args.peft_method == 'adalora':
+            config_dict.update({
+                "lora_alpha": args.lora_alpha,
+                "lora_dropout": args.lora_dropout,
+                "adalora_init_r": args.adalora_init_r,
+                "adalora_target_r": args.adalora_target_r,
+                "adalora_warmup_steps": args.adalora_warmup_steps,
+                "adalora_update_interval": args.adalora_update_interval,
+                "adalora_orth_reg_weight": args.adalora_orth_reg_weight,
             })
         
         wandb.init(
@@ -229,7 +262,53 @@ def train_ddp(args):
             total_params = sum(p.numel() for p in model.parameters())
             print(f"✓ Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
     
-    
+    elif args.peft_method == 'adalora':
+        if rank == 0:
+            print(f"Applying AdaLoRA (init_r={args.adalora_init_r}, target_r={args.adalora_target_r}, alpha={args.lora_alpha})")
+
+        for param in model.sam_model.parameters():
+            param.requires_grad = False
+        
+        ADALORA_TARGET_MODULES = [
+            "attn.qkv",
+            "attn.proj",
+            "mlp.lin1",  # Present in both image encoder and mask decoder
+            "mlp.lin2",  # Present in both image encoder and mask decoder
+
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "out_proj",
+
+            "output_hypernetworks_mlps",
+            "iou_prediction_head",
+        ]
+
+        convert_linear_to_adalora(
+            model.sam_model,
+            r = args.adalora_init_r,
+            lora_alpha = args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=ADALORA_TARGET_MODULES
+        )
+
+        if hasattr(model.sam_model, 'no_mask_embedding'):
+            model.sam_model.no_mask_embedding.requires_grad = True
+
+        if hasattr(model.sam_model, 'positional_encoding'):
+            model.sam_model.positional_encoding.requires_grad = True
+
+        if hasattr(model.sam_model, 'image_encoder') and hasattr(model.sam_model.image_encoder, 'patch_embed'):
+            for param in model.sam_model.image_encoder.patch_embed.parameters():
+                param.requires_grad = True
+            if rank == 0:
+                print("✓ Made patch embedding parameters (in ViT) trainable.")
+
+        if rank == 0:
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model.parameters())
+            print(f"✓ Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
+
     elif args.peft_method == 'none':
         if rank == 0:
             print("✓ Using full fine-tuning (all parameters trainable)")
@@ -312,36 +391,27 @@ def train_ddp(args):
     criterion = CombinedLoss()
     optimizer = torch.optim.AdamW(param_groups)
 
-    # LR scheduler with warmup
-    cosine_epochs = max(1, args.epochs - args.warmup_epochs)
-    start_lr_factor = args.warmup_start_lr / args.scratch_lr
+    rank_allocator = None
+    if args.peft_method == 'adalora':
+        total_steps = len(train_loader) * args.epochs
+        if rank == 0:
+            print(f"Initializing AdaLoRA RankAllocator....")
+            print(f"  Total training steps: {total_steps}")
+            print(f"  Initial warmup steps: {args.adalora_warmup_steps}")
+            print(f"  Final warmup steps: {args.adalora_final_warmup_steps}")
+            print(f"  Rank update interval: {args.adalora_update_interval} steps")
 
-    def lr_lambda_pretrained(epoch):
-        """
-        LR scheduler for pre-trained parameters.
-        Constant during warmup, cosine annealing afterwards.
-        """
-        if epoch < args.warmup_epochs:
-            return 1.0
-        else:
-            progress = (epoch - args.warmup_epochs) / cosine_epochs
-            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress))).item()
-        
-    def lr_lambda_scratch(epoch):
-        """
-        LR scheduler for parameters trained from scratch.
-        Linear warmup, then cosine annealing.
-        """
-        if epoch < args.warmup_epochs:
-            #Linear warmup
-            if args.warmup_epochs == 0: return 1.0 #Avoid division by zero
-            return start_lr_factor + (1.0 - start_lr_factor) * (epoch / args.warmup_epochs)
-        else:
-            progress = (epoch - args.warmup_epochs) / cosine_epochs
-            return 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * progress))).item()
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
-                                                  lr_lambda=[lr_lambda_pretrained, lr_lambda_scratch])
+        rank_allocator = RankAllocator(model.module,
+                                       lora_r=args.adalora_init_r,
+                                       target_rank = args.adalora_target_r,
+                                       init_warmup=args.adalora_warmup_steps,
+                                       final_warmup = args.adalora_final_warmup_steps,
+                                       mask_interval=args.adalora_update_interval,
+                                       beta1 = args.adalora_beta1,
+                                       beta2 = args.adalora_beta2,
+                                       total_step=total_steps)
+    
+    scheduler = get_scheduler(optimizer, args)
     
     scaler = GradScaler()
 
@@ -364,7 +434,8 @@ def train_ddp(args):
         current_lr_scratch = optimizer.param_groups[1]['lr']
 
         epoch_loss = train_one_epoch(model, train_loader, optimizer, criterion, 
-                                     local_rank, rank, scaler, epoch, use_wandb)
+                                     local_rank, rank, scaler, epoch, use_wandb,
+                                     rank_allocator, args)
 
         if rank == 0:
             print(f"Epoch {epoch+1}/{args.epochs}, Training Loss: {epoch_loss}")
@@ -390,16 +461,7 @@ def train_ddp(args):
                 best_val_loss = val_loss
                 no_improve_epochs = 0
                 checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_batch{args.batch_size}_val_loss{val_loss}.pth"
-                
-                # Save appropriate state dict based on training mode
-                if args.peft_method == 'lora':
-                    # Save full model state dict (including LoRA weights)
-                    torch.save(model.module.state_dict(), checkpoint_path)
-                    print(f"Saved Best Model with Validation Loss: {best_val_loss}")
-                else:
-                    # Save full model state dict
-                    torch.save(model.module.state_dict(), checkpoint_path)
-                    print(f"Saved Best Model with Validation Loss: {best_val_loss}")
+                torch.save(model.module.state_dict(), checkpoint_path)
                 
                 # Save model to wandb if enabled
                 if use_wandb:
@@ -409,8 +471,8 @@ def train_ddp(args):
                 no_improve_epochs += 1
                 if no_improve_epochs >= args.early_stopping_patience:
                     print(f"No improvement for {args.early_stopping_patience} epochs, stopping training.")
-                    
                     stop_training_signal.fill_(1)
+
         dist.broadcast(stop_training_signal, src=0)
         if stop_training_signal.item() == 1:
             if rank != 0:
@@ -449,11 +511,20 @@ if __name__ == "__main__":
     parser.add_argument('--val_gt_dir', type=str, required=True, help='Path to validation ground truth directory containing .nc files')
     
     # PEFT (Parameter-Efficient Fine-Tuning) arguments
-    parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora'],
-                       help='Parameter-efficient fine-tuning method: none (full), lora')
-    parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank (default: 8)')
-    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha scaling (default: 16)')
-    parser.add_argument('--lora_dropout', type=float, default=0.0, help='LoRA dropout rate (default: 0.0)')
+    parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora', 'adalora'],
+                       help='Parameter-efficient fine-tuning method: none (full), lora, adalora')
+    parser.add_argument('--lora_rank', type=int, default=32, help='LoRA rank (default: 32)')
+    parser.add_argument('--lora_alpha', type=int, default=32, help='LoRA alpha scaling (default: 32)')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout rate (default: 0.1)')
+
+    parser.add_argument('--adalora_init_r', type=int, default=12, help='AdaLoRA initial rank (if peft_method=adalora)')
+    parser.add_argument('--adalora_target_r', type=int, default=8, help='AdaLoRA target average rank (if peft_method=adalora)')
+    parser.add_argument('--adalora_warmup_steps', type=int, default=1000, help='AdaLoRA initial warmup steps (if peft_method=adalora)')
+    parser.add_argument('--adalora_final_warmup_steps', type=int, default=0, help='AdaLoRA final warmup steps before end of training')
+    parser.add_argument('--adalora_update_interval', type=int, default=10, help='AdaLoRA rank update interval (in steps)')
+    parser.add_argument('--adalora_beta1', type=float, default=0.85, help='AdaLoRA beta1 for sensitivity EMA')
+    parser.add_argument('--adalora_beta2', type=float, default=0.85, help='AdaLoRA beta2 for uncertainty EMA')
+    parser.add_argument('--adalora_orth_reg_weight', type=float, default=0.1, help='AdaLoRA orthogonal regularization weight')
 
     parser.add_argument('--use_gradient_checkpointing', type=lambda x: x.lower() == 'true', default=True, help='Use gradient checkpointing to save memory')
 

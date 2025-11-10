@@ -110,9 +110,7 @@ class RankAllocator(object):
         beta1 (`float`): The hyperparameter of EMA for sensitivity smoothing.
         beta2 (`float`): The hyperparameter of EMA for undertainty quantification.
         total_step (`int`): The total training steps, correctly configured before training.
-        target_total_rank (`Optinal[int]`): The speficified final total rank. 
-        tb_writter (`SummaryWriter`): Tensorboard SummaryWriter. 
-        tb_writter_loginterval (`int`): The logging interval of SummaryWriter. 
+        target_total_rank (`Optinal[int]`): The speficified final total rank.
     """
     def __init__(
         self, model, 
@@ -125,8 +123,6 @@ class RankAllocator(object):
         beta2:float, 
         total_step:Optional[int]=None, 
         target_total_rank:Optional[int]=None,
-        tb_writter=None,
-        tb_writter_loginterval:int=500, 
     ):
         self.ave_target_rank = target_rank 
         self.target_rank = target_total_rank
@@ -145,9 +141,6 @@ class RankAllocator(object):
         self.cat_ipt = {}
         self.rank_pattern = {} 
         self.get_lora_param_name()
-
-        self.tb_writter = tb_writter
-        self.log_interval = tb_writter_loginterval 
 
         assert (self.beta1<1 and self.beta1>0)
         assert (self.beta2<1 and self.beta2>0)
@@ -281,24 +274,13 @@ class RankAllocator(object):
 
         # Mask out unimportant singular values 
         with torch.no_grad():
-            curr_sum_rank = 0
-            sum_param = 0
             for n,p in model.named_parameters():
                 if "lora_E" in n: 
                     p.data.masked_fill_(is_dict[n]<=mask_threshold, 0.0)
                     ranknum = (is_dict[n]>mask_threshold).sum().item() 
 
-                    if self.tb_writter is not None and self.global_step%self.log_interval==0:
-                        self.tb_writter.add_scalar("Ranknum/%s"%(n,), ranknum, self.global_step) 
-                        self.rank_pattern[n] = ranknum 
-                        curr_sum_rank += ranknum 
-                        sum_param += ranknum*self.shape_dict[n.replace("lora_E", "lora_A")][1]  
-                        sum_param += ranknum*self.shape_dict[n.replace("lora_E", "lora_B")][0]  
+                    self.rank_pattern[n] = ranknum
 
-            if self.tb_writter is not None and self.global_step%self.log_interval==0:
-                self.tb_writter.add_scalar("Budget/total_rank", curr_sum_rank, self.global_step)
-                self.tb_writter.add_scalar("Budget/mask_threshold", mask_threshold, self.global_step)
-                self.tb_writter.add_scalar("Budget/sum_param", sum_param, self.global_step)
 
         return mask_threshold
 
@@ -315,28 +297,8 @@ class RankAllocator(object):
             mask_threshold = self.mask_to_target_rank(model, curr_rank) 
         else:
             mask_threshold = None 
-        self._maybe_tb_writter_log(model)
+
         return curr_rank, mask_threshold
-
-    def _maybe_tb_writter_log(self, model):
-        if self.tb_writter is not None and self.global_step%self.log_interval==0:
-            with torch.no_grad():
-                regu_loss = []
-                for n,p in model.named_parameters():
-                    if "lora_A" in n or "lora_B" in n:
-                        mat = p.data.detach().clone()
-                        mat_cov = mat @ mat.T if "lora_A" in n else mat.T @ mat 
-                        I = torch.eye(*mat_cov.size(), out=torch.empty_like(mat_cov))
-                        I.requires_grad = False
-                        orth_regu = torch.norm(mat_cov-I, p="fro")
-                        regu_loss.append(orth_regu.item())
-                        self.tb_writter.add_scalar(
-                            "Orth_regu_loss/%s"%n, orth_regu.item(), self.global_step
-                        )
-                self.tb_writter.add_scalar(
-                    "train/orth_regu_loss", sum(regu_loss)/len(regu_loss), self.global_step
-                )
-
 
 def compute_orth_regu(model, regu_weight=0.1):
     # The function to compute orthongonal regularization for SVDLinear in `model`. 
