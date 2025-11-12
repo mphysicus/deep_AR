@@ -37,20 +37,21 @@ class DeepAR(nn.Module):
                 - 'ar_maps': Reconstructed AR maps.
                 - 'intermediate': (Optional) Intermediate outputs if requested.
         """
+        image_tensor = torch.stack([d["image"] for d in x])
         outputs = {}
 
         # Step 1: Generate input features
-        x = self.input_generator(x)
+        x_features = self.input_generator(image_tensor)
         if return_intermediate:
-            outputs['input_features'] = x.detach()
+            outputs['input_features'] = x_features.detach()
 
         # Step 2: Predict masks using SAM
-        batch_size = x.shape[0]
+        batch_size = x_features.shape[0]
         batched_input = []
         for i in range(batch_size):
             batched_input.append({
-                "image": x[i],
-                "original_size": (x.shape[2], x.shape[3])
+                "image": x_features[i],
+                "original_size": (x_features.shape[2], x_features.shape[3])
             })
         sam_outputs = self.sam_model(batched_input, multimask_output=multimask_output)
 
@@ -75,5 +76,5 @@ class DeepAR(nn.Module):
         """
         with torch.no_grad():
             outputs = self.forward(x)
-            binary_masks = (outputs['masks'] > self.mask_threshold).float()
+            binary_masks = (outputs['output'] > self.mask_threshold).float()
         return binary_masks

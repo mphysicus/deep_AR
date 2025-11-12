@@ -13,6 +13,7 @@ from deep_ar.build_deep_ar import deep_ar_model_registry
 from deep_ar.data.datasets import ARTrainingDataset
 from loss import CombinedLoss
 from datetime import timedelta
+from lora.lora import LoRA
 
 # Import LoRA utilities
 from lora.utils import apply_lora_to_sam
@@ -372,6 +373,8 @@ def train_ddp(args):
 
         val_loss = validate(model, val_loader, criterion, 
                             local_rank, rank)
+        
+        save_signal = torch.tensor(0, device=local_rank)
 
         if rank == 0:
             print(f"Epoch {epoch+1}/{args.epochs}, Validation Loss: {val_loss}")
@@ -389,29 +392,42 @@ def train_ddp(args):
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve_epochs = 0
-                checkpoint_path = f"{args.checkpoint}/best_model_epoch_{epoch+1}_batch{args.batch_size}_val_loss{val_loss}.pth"
-                
-                # Save appropriate state dict based on training mode
-                if args.peft_method == 'lora':
-                    # Save full model state dict (including LoRA weights)
-                    torch.save(model.module.state_dict(), checkpoint_path)
-                    print(f"Saved Best Model with Validation Loss: {best_val_loss}")
-                else:
-                    # Save full model state dict
-                    torch.save(model.module.state_dict(), checkpoint_path)
-                    print(f"Saved Best Model with Validation Loss: {best_val_loss}")
-                
-                # Save model to wandb if enabled
-                if use_wandb:
-                    wandb.run.summary["best_val_loss"] = best_val_loss
-                    wandb.run.summary["best_epoch"] = epoch + 1
+                save_signal.fill_(1)
             else:
                 no_improve_epochs += 1
                 if no_improve_epochs >= args.early_stopping_patience:
                     print(f"No improvement for {args.early_stopping_patience} epochs, stopping training.")
-                    
                     stop_training_signal.fill_(1)
+
         dist.broadcast(stop_training_signal, src=0)
+        dist.broadcast(save_signal, src=0)
+
+        if save_signal.item() == 1:
+            if args.peft_method == 'lora':
+                for module in model.module.modules():
+                    if isinstance(module, LoRA):
+                        module.merge_inplace()
+                
+                if rank == 0:
+                    print("Merging LoRA weights for saving....")
+            
+            if rank == 0:
+                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}_val_loss{val_loss}_loradropout_{args.lora_dropout}.pth"
+                torch.save(model.module.state_dict(), checkpoint_path)
+                print(f"Saved best model checkpoint to {checkpoint_path} with val_loss {best_val_loss}")
+
+                if use_wandb:
+                    wandb.run.summary["best_val_loss"] = best_val_loss
+                    wandb.run.summary["best_epoch"] = epoch+1
+            
+            if args.peft_method == 'lora':
+                for module in model.module.modules():
+                    if isinstance(module, LoRA):
+                        module.unmerge_inplace()
+                
+                if rank == 0:
+                    print("Unmerged LoRA weights, resuming training....")   
+
         if stop_training_signal.item() == 1:
             if rank != 0:
                 print(f"Rank {rank} received stop training signal.")

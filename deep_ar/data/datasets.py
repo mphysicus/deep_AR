@@ -210,7 +210,7 @@ class ARInferenceDataset(Dataset):
     def __init__(
         self,
         input_files: List[Union[str, Path]],
-        ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
+        ivt_vars: Tuple[str, str, str] = ("ivt", "ivt_u", "ivt_v"),
         time_dim: str = "time",
         ivt_mean: Tuple[float, float, float] = (117.935, -14.164, -1.383),
         ivt_std: Tuple[float, float, float] = (125.184, 143.868, 93.162),

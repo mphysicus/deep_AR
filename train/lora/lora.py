@@ -22,7 +22,7 @@ class LoRA(nn.Module):
         self,
         layer: nn.Linear,
         rank: int = 30,
-        alpha: int = 16,
+        alpha: int = 32,
         dropout: float = 0.0,
         freeze_base: bool = True,
     ) -> None:
