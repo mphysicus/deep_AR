@@ -52,7 +52,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, local_rank, rank, s
 
         with autocast("cuda"):
             outputs = model(images)
-            logits = outputs['output']
+            logits = outputs['masks']
             loss = criterion(logits, masks)
         
         total_train_loss += loss.item()

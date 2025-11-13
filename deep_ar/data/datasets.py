@@ -26,11 +26,11 @@ class ARTrainingDataset(Dataset):
         self,
         input_files: List[Union[str, Path]],
         gt_files: List[Union[str, Path]],
-        ivt_vars: Tuple[str, str, str] = ("ivt", "ivtu", "ivtv"),
+        ivt_vars: Tuple[str] = ['ivt'],
         gt_var: str = "ar_mask",
         time_dim: str = "time",
-        ivt_mean: Tuple[float, float, float] = (117.935, -14.164, -1.383),
-        ivt_std: Tuple[float, float, float] = (125.184, 143.868, 93.162),
+        global_max = 6372.3,
+        global_min = 0.0,
         use_memory_mapping: bool = True,
         chunk_size = 'auto'
     ):
@@ -53,10 +53,8 @@ class ARTrainingDataset(Dataset):
         self.time_dim = time_dim
         self.use_memory_mapping = use_memory_mapping
         self.chunk_size = chunk_size
-        
-        # Store normalization parameters
-        self.ivt_mean = np.array(ivt_mean, dtype=np.float32).reshape(3, 1, 1)
-        self.ivt_std = np.array(ivt_std, dtype=np.float32).reshape(3, 1, 1)
+        self.global_max = global_max
+        self.global_min = global_min
         
         if len(self.input_files) != len(self.gt_files):
             raise ValueError(f"Number of input files ({len(self.input_files)}) must match number of GT files ({len(self.gt_files)})")
@@ -149,10 +147,8 @@ class ARTrainingDataset(Dataset):
             input_ds = xr.open_dataset(self.input_files[file_idx])
 
         ivt = input_ds[self.ivt_vars[0]].isel({self.time_dim: input_time_idx}).values
-        ivt_u = input_ds[self.ivt_vars[1]].isel({self.time_dim: input_time_idx}).values
-        ivt_v = input_ds[self.ivt_vars[2]].isel({self.time_dim: input_time_idx}).values
 
-        input_array = np.stack([ivt, ivt_u, ivt_v], axis=0)
+        input_array = np.stack([ivt, ivt, ivt], axis=0)
         original_size = input_array.shape[1:]  # (H, W)
 
         # Load ground truth mask
@@ -168,10 +164,11 @@ class ARTrainingDataset(Dataset):
             gt_ds.close()
         
         # Normalise input data:
-        input_array = (input_array - self.ivt_mean) / self.ivt_std
+        input_array = (input_array - self.global_min) / (self.global_max - self.global_min)
+        input_array = np.clip(input_array, 0.0, 1.0)
 
         # Convert to tensors
-        input_tensor = torch.from_numpy(input_array).float()  # (3, H, W)
+        input_tensor = torch.from_numpy(input_array * 255).float()  # (3, H, W)
         gt_mask_tensor = torch.from_numpy(gt_mask).float().unsqueeze(0) # (1, H, W)
 
         return {
