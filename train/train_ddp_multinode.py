@@ -90,7 +90,7 @@ def validate(model, dataloader, criterion, local_rank, rank):
 
             with autocast("cuda"):
                 outputs = model(images)
-                logits = outputs['output']
+                logits = outputs['masks']
                 loss = criterion(logits, masks)
 
             total_val_loss += loss.item()
@@ -202,8 +202,7 @@ def train_ddp(args):
             "v_proj",
             "out_proj",
 
-            "output_hypernetworks_mlps",
-            "iou_prediction_head",
+            "output_hypernetworks_mlps"
         ]
         # Apply LoRA to the SAM model inside DeepAR
         apply_lora_to_sam(

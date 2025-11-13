@@ -2,7 +2,7 @@
 program: launch.sh
 method: random
 entity: deep_ar
-project: vit_l_a100
+project: vit_l_no_cnn
 command:
   - ${env}
   - bash
@@ -50,10 +50,10 @@ parameters:
   # --- Hyperparameters to Tune ---
 
   lora_rank:
-    values: [16, 20, 24, 28, 32, 36, 40]
+    values: [32, 36, 40, 44]
 
   lora_dropout:
     values: [0.0, 0.05, 0.1, 0.2]
   
   batch_size:
-    values: [20, 24, 28, 32, 36]
+    values: [44, 48, 56]
