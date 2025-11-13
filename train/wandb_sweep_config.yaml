@@ -2,14 +2,14 @@
 program: launch.sh
 method: random
 entity: deep_ar
-project: deep_ar_vit_l_a30
+project: vit_l_a100
 command:
   - ${env}
   - bash
   - ${program}
   - ${args}
 metric:
-  name: val_loss
+  name: best_val_loss
   goal: minimize
 parameters:
   # --- Fixed Parameters for the Sweep ---
@@ -26,7 +26,7 @@ parameters:
   original_sam_checkpoint:
     value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
   checkpoint:
-    value: "/storage/prakhar/Sem_Project/weights/finetuned_weights"
+    value: "/storage/prakhar/Sem_Project/weights/finetuned_weights/"
   peft_method:
     value: "lora"
   epochs:
@@ -50,10 +50,10 @@ parameters:
   # --- Hyperparameters to Tune ---
 
   lora_rank:
-    values: [8, 12, 16, 20]
+    values: [16, 20, 24, 28, 32, 36, 40]
 
   lora_dropout:
-    values: [0.0, 0.05, 0.1]
+    values: [0.0, 0.05, 0.1, 0.2]
   
   batch_size:
-    values: [6, 12, 18]
+    values: [20, 24, 28, 32, 36]

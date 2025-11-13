@@ -12,7 +12,7 @@ echo "[launch.sh] Master: $MASTER_ADDR, Port: $MASTER_PORT, ID: $RDZV_ID"
 CMD="source /home/prakhar/miniconda3/bin/activate semester; \
      torchrun \
         --nnodes=${SLURM_NNODES} \
-        --nproc-per-node=2 \
+        --nproc-per-node=4 \
         --rdzv_id=$RDZV_ID \
         --rdzv_backend=c10d \
         --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
@@ -24,7 +24,7 @@ srun --export=ALL,MASTER_ADDR,MASTER_PORT,RDZV_ID \
   --nodes=${SLURM_NNODES} \
   --ntasks-per-node=1 \
   --cpus-per-task=${SLURM_CPUS_PER_TASK} \
-  --gres=gpu:2 \
+  --gres=gpu:4 \
   bash -c "$CMD"
 
 echo "--- [launch.sh] Trial finished at $(date) ---"
