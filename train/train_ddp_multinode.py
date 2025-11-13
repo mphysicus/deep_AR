@@ -14,10 +14,8 @@ from deep_ar.data.datasets import ARTrainingDataset
 from loss import CombinedLoss
 from datetime import timedelta
 from lora.lora import LoRA
-<<<<<<< HEAD
-=======
 from scheduler import get_scheduler
->>>>>>> Refactoring the training script and and adding better logic for saving the weights
+
 
 # Import LoRA utilities
 from lora.utils import apply_lora_to_sam
