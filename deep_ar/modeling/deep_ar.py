@@ -37,7 +37,10 @@ class DeepAR(nn.Module):
                 - 'ar_maps': Reconstructed AR maps.
                 - 'intermediate': (Optional) Intermediate outputs if requested.
         """
-        image_tensor = torch.stack([d["image"] for d in x])
+        if isinstance(x, torch.Tensor):
+            image_tensor = x
+        else:
+            image_tensor = torch.stack([d["image"] for d in x])
         outputs = {}
 
         # Step 1: Generate input features
@@ -60,7 +63,6 @@ class DeepAR(nn.Module):
 
         if return_intermediate:
             outputs['masks'] = masks.detach()
-            outputs['iou_predictions'] = torch.stack([output['iou_predictions'] for output in sam_outputs]).detach()
 
         del sam_outputs, batched_input
 
