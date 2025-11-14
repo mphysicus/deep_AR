@@ -78,7 +78,6 @@ class SamAR(nn.Module):
             outputs.append(
                 {
                     "masks": masks,
-                    "iou_predictions": iou_predictions,
                 }
             )
         return outputs

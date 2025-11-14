@@ -1,22 +1,17 @@
 import torch
 import torch.nn as nn
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 from .sam_no_prompt import SamAR
 from .input_generator import IVT2RGB
-from .map_reconstructor import Mask2ARMaps
 
 class DeepAR(nn.Module):
     def __init__(self, 
                  sam_model: SamAR,
-                 input_generator: IVT2RGB,
-                 map_reconstructor: Mask2ARMaps,
-                 mask_threshold: float = 0.0):
+                 input_generator: IVT2RGB):
         super().__init__()
         self.sam_model = sam_model
         self.input_generator = input_generator
-        self.map_reconstructor = map_reconstructor
-        self.mask_threshold = mask_threshold
 
     def forward(self,
                 x: torch.Tensor,
@@ -61,22 +56,16 @@ class DeepAR(nn.Module):
         #Extract masks
         masks = torch.stack([output['masks'].squeeze(1) for output in sam_outputs])
 
-        if return_intermediate:
-            outputs['masks'] = masks.detach()
-
-        del sam_outputs, batched_input
-
-        # Step 3: AR Map Reconstruction
-        reconstructed = self.map_reconstructor(masks)
-        outputs['output'] = reconstructed
+        outputs['output'] = masks
 
         return outputs
     
-    def get_binary_masks(self, x:torch.Tensor):
+    def get_binary_masks(self, x:torch.Tensor,
+                         mask_threshold: float = 0.0):
         """
         Get thresholded binary masks for inference/visualization.
         """
         with torch.no_grad():
             outputs = self.forward(x)
-            binary_masks = (outputs['output'] > self.mask_threshold).float()
+            binary_masks = (outputs['output'] > mask_threshold).float()
         return binary_masks

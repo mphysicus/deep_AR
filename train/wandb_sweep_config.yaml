@@ -2,7 +2,7 @@
 program: launch.sh
 method: random
 entity: deep_ar
-project: vit_l_only_cnn_sweep
+project: remove_mask_reconstructor
 command:
   - ${env}
   - bash
@@ -26,7 +26,7 @@ parameters:
   original_sam_checkpoint:
     value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
   checkpoint:
-    value: "/storage/prakhar/Sem_Project/weights/finetuned_weights/train_only_cnn"
+    value: "/storage/prakhar/Sem_Project/weights/finetuned_weights/remove_mask_reconstructor"
   peft_method:
     value: "only_cnn"
   epochs:
@@ -48,4 +48,4 @@ parameters:
   # --- Hyperparameters to Tune ---
   
   batch_size:
-    values: [36, 39, 42, 45]
+    values: [44, 48, 52, 56]

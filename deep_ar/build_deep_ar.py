@@ -5,7 +5,6 @@ from .modeling import ImageEncoderViT, MaskDecoder, TwoWayTransformer
 from .modeling.sam_no_prompt import SamAR
 from .modeling.deep_ar import DeepAR
 from .modeling.input_generator import IVT2RGB
-from .modeling.map_reconstructor import Mask2ARMaps
 
 
 def build_deep_ar_vit_h(checkpoint=None, use_gradient_checkpointing=True):
@@ -90,11 +89,9 @@ def _build_deep_ar(
     )
 
     input_generator = IVT2RGB()
-    map_reconstructor = Mask2ARMaps()
     deep_ar = DeepAR(
         sam_model=sam_ar,
-        input_generator=input_generator,
-        map_reconstructor=map_reconstructor,)
+        input_generator=input_generator)
     
     sam_ar.eval()
     if checkpoint is not None:

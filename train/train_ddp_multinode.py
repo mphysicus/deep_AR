@@ -403,7 +403,7 @@ def train_ddp(args):
                     print("Merging LoRA weights for saving....")
             
             if rank == 0:
-                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}_loradropout_{args.lora_dropout}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}.pth"
                 torch.save(model.module.state_dict(), checkpoint_path)
                 print(f"Saved best model checkpoint to {checkpoint_path} with val_loss {best_val_loss}")
 
