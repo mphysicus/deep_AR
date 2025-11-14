@@ -217,9 +217,6 @@ def train_ddp(args):
         if hasattr(model.sam_model, 'no_mask_embedding'):
             model.sam_model.no_mask_embedding.requires_grad = True
 
-        if hasattr(model.sam_model, 'positional_encoding'):
-            model.sam_model.positional_encoding.requires_grad = True
-
         if hasattr(model.sam_model, 'image_encoder') and hasattr(model.sam_model.image_encoder, 'patch_embed'):
             for param in model.sam_model.image_encoder.patch_embed.parameters():
                 param.requires_grad = True
@@ -230,8 +227,7 @@ def train_ddp(args):
             trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             total_params = sum(p.numel() for p in model.parameters())
             print(f"✓ Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
-    
-    
+            
     elif args.peft_method == 'none':
         if rank == 0:
             print("✓ Using full fine-tuning (all parameters trainable)")
@@ -384,7 +380,7 @@ def train_ddp(args):
                     print("Merging LoRA weights for saving....")
             
             if rank == 0:
-                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}_val_loss{val_loss}_loradropout_{args.lora_dropout}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}_lorarank_{args.lora_rank}_loradropout_{args.lora_dropout}.pth"
                 torch.save(model.module.state_dict(), checkpoint_path)
                 print(f"Saved best model checkpoint to {checkpoint_path} with val_loss {best_val_loss}")
 
