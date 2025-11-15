@@ -232,7 +232,25 @@ def train_ddp(args):
             total_params = sum(p.numel() for p in model.parameters())
             print(f"✓ Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
     
-    
+    elif args.peft_method == 'only_cnn':
+        if rank == 0:
+            print("Training only the two new CNN modules (input generator and map reconstructor) and learnable no-mask embedding.")
+
+        for param in model.sam_model.parameters():
+            param.requires_grad = False
+            
+        if hasattr(model.sam_model, 'no_mask_embedding'):
+            model.sam_model.no_mask_embedding.requires_grad = True
+            
+        if rank == 0:
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model.parameters())
+            print(f"✓ Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.2f}%)")
+            print("List of trainable parameters:\n")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    print(f"  {name} - {param.shape}")
+
     elif args.peft_method == 'none':
         if rank == 0:
             print("✓ Using full fine-tuning (all parameters trainable)")
@@ -385,7 +403,7 @@ def train_ddp(args):
                     print("Merging LoRA weights for saving....")
             
             if rank == 0:
-                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}_val_loss{val_loss}_loradropout_{args.lora_dropout}.pth"
+                checkpoint_path = f"{args.checkpoint}/best_model_batch{args.batch_size}.pth"
                 torch.save(model.module.state_dict(), checkpoint_path)
                 print(f"Saved best model checkpoint to {checkpoint_path} with val_loss {best_val_loss}")
 
@@ -438,7 +456,7 @@ if __name__ == "__main__":
     parser.add_argument('--val_gt_dir', type=str, required=True, help='Path to validation ground truth directory containing .nc files')
     
     # PEFT (Parameter-Efficient Fine-Tuning) arguments
-    parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora'],
+    parser.add_argument('--peft_method', type=str, default='none', choices=['none', 'lora', 'only_cnn'],
                        help='Parameter-efficient fine-tuning method: none (full), lora')
     parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank (default: 8)')
     parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha scaling (default: 16)')
