@@ -8,7 +8,7 @@
 > **⚠️ Note**: This is an ongoing project under active development. Features, documentation and code may change.
 
 ---
-DeepAR is a deep learning model designed for Atmospheric Rivers (AR) detection and segmentation from climate data (using the Climate variable IVT, IVT_u, IVT_v). It utilizes a modified, prompt-less Segment Anything Model (SAM) to generate segmentation masks, which are then refined into AR maps.
+DeepAR is a deep learning model designed for Atmospheric Rivers (AR) detection and segmentation from climate data (using the Climate variable IVT, IVT_u, IVT_v). It utilizes a modified, prompt-less Segment Anything Model (SAM) to generate AR masks.
 
 ## Model Architecture
 The DeepAR model processes data through a three-stage pipeline:
