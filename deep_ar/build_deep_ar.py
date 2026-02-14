@@ -7,35 +7,32 @@ from .modeling.deep_ar import DeepAR
 from .modeling.input_generator import IVT2RGB
 
 
-def build_deep_ar_vit_h(checkpoint=None, use_gradient_checkpointing=True):
+def build_deep_ar_vit_h(checkpoint=None):
     return _build_deep_ar(
         encoder_embed_dim=1280,
         encoder_depth=32,
         encoder_num_heads=16,
         encoder_global_attn_indexes=[7, 15, 23, 31],
         checkpoint=checkpoint,
-        use_gradient_checkpointing=use_gradient_checkpointing,
     )
 
 
-def build_deep_ar_vit_l(checkpoint=None, use_gradient_checkpointing=True):
+def build_deep_ar_vit_l(checkpoint=None):
     return _build_deep_ar(
         encoder_embed_dim=1024,
         encoder_depth=24,
         encoder_num_heads=16,
         encoder_global_attn_indexes=[5, 11, 17, 23],
         checkpoint=checkpoint,
-        use_gradient_checkpointing=use_gradient_checkpointing,
     )
 
-def build_deep_ar_vit_b(checkpoint=None, use_gradient_checkpointing=True):
+def build_deep_ar_vit_b(checkpoint=None):
     return _build_deep_ar(
         encoder_embed_dim=768,
         encoder_depth=12,
         encoder_num_heads=12,
         encoder_global_attn_indexes=[2, 5, 8, 11],
         checkpoint=checkpoint,
-        use_gradient_checkpointing=use_gradient_checkpointing,
     )
 
 
@@ -52,7 +49,6 @@ def _build_deep_ar(
     encoder_num_heads,
     encoder_global_attn_indexes,
     checkpoint=None,
-    use_gradient_checkpointing=True,
 ):
     prompt_embed_dim = 256
     image_size = 1024
@@ -72,7 +68,6 @@ def _build_deep_ar(
             global_attn_indexes=encoder_global_attn_indexes,
             window_size=14,
             out_chans=prompt_embed_dim,
-            use_gradient_checkpointing=use_gradient_checkpointing,
         ),
         mask_decoder=MaskDecoder(
             num_multimask_outputs=3,
