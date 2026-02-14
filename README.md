@@ -54,4 +54,4 @@ The model is designed to work with NetCDF files (.nc) containing `ivt`, `ivtu` a
 
 
 ## 🙏 Acknowledgment
-We are thankful to [Segment Anything](https://github.com/facebookresearch/segment-anything) for releasing their code as open-source contributions. We are also thankful to [AdaLoRA](https://github.com/QingruZhang/AdaLoRA) for their open-source contribution in AdaLoRA PEFT training.
+We are thankful to [Segment Anything](https://github.com/facebookresearch/segment-anything) for releasing their code as open-source contributions.
