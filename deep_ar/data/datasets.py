@@ -32,7 +32,8 @@ class ARTrainingDataset(Dataset):
         ivt_mean: Tuple[float, float, float] = (117.935, -14.164, -1.383),
         ivt_std: Tuple[float, float, float] = (125.184, 143.868, 93.162),
         use_memory_mapping: bool = True,
-        chunk_size = 'auto'
+        chunk_size = 'auto',
+        verbose: bool = True
     ):
         """
         Args:
@@ -45,6 +46,7 @@ class ARTrainingDataset(Dataset):
             ivt_std: Std values for (IVT, IVT_u, IVT_v)
             use_memory_mapping: Whether to use memory mapping for large datasets
             chunk_size: Chunk size for memory mapping (if used)
+            verbose: Whether to print progress messages (default: True)
         """
         self.input_files = [Path(f) for f in input_files]
         self.gt_files = [Path(f) for f in gt_files]
@@ -53,6 +55,7 @@ class ARTrainingDataset(Dataset):
         self.time_dim = time_dim
         self.use_memory_mapping = use_memory_mapping
         self.chunk_size = chunk_size
+        self.verbose = verbose
         
         # Store normalization parameters
         self.ivt_mean = np.array(ivt_mean, dtype=np.float32).reshape(3, 1, 1)
@@ -62,12 +65,14 @@ class ARTrainingDataset(Dataset):
             raise ValueError(f"Number of input files ({len(self.input_files)}) must match number of GT files ({len(self.gt_files)})")
         
         if self.use_memory_mapping:
-            print("\nOpening dataset files with memory mapping...")
+            if self.verbose:
+                print("\nOpening dataset files with memory mapping...")
             try:
                 self.input_datasets = [xr.open_dataset(f, chunks=self.chunk_size) for f in self.input_files]
                 self.gt_datasets = [xr.open_dataset(f) for f in self.gt_files]
             except Exception as e:
-                print(f"Error opening dataset files: {e}")
+                if self.verbose:
+                    print(f"Error opening dataset files: {e}")
                 # Clean up any partially opened datasets
                 if hasattr(self, 'input_datasets') and self.input_datasets:
                     for ds in self.input_datasets:
@@ -80,7 +85,8 @@ class ARTrainingDataset(Dataset):
             self.input_datasets = None
             self.gt_datasets = None
 
-        print("Building dataset index...")
+        if self.verbose:
+            print("Building dataset index...")
         self._build_index()
 
     def _build_index(self):
@@ -114,14 +120,16 @@ class ARTrainingDataset(Dataset):
                     total_matched += 1
                 else:
                     total_unmatched += 1
-                    print(f"Warning: No matching GT timestamp for input time {input_time} in file {self.input_files[file_idx]}")
+                    if self.verbose:
+                        print(f"Warning: No matching GT timestamp for input time {input_time} in file {self.input_files[file_idx]}")
 
             if not self.use_memory_mapping:
                 input_ds.close()
                 gt_ds.close()
 
-        print(f"Total matched samples: {total_matched}")
-        print(f"Total unmatched samples: {total_unmatched}")
+        if self.verbose:
+            print(f"Total matched samples: {total_matched}")
+            print(f"Total unmatched samples: {total_unmatched}")
 
     def __len__(self) -> int:
         return len(self.index)
@@ -217,6 +225,7 @@ class ARInferenceDataset(Dataset):
         use_memory_mapping: bool = True,
         chunk_size = 'auto',
         return_metadata: bool = True,
+        verbose: bool = True
     ):
         """
         Args:
@@ -228,6 +237,7 @@ class ARInferenceDataset(Dataset):
             use_memory_mapping: Whether to use memory mapping for large datasets
             chunk_size: Chunk size for memory mapping (if used)
             return_metadata: Whether to return metadata (timestamp, coordinates, etc.)
+            verbose: Whether to print progress messages (default: True)
         """
         self.input_files = [Path(f) for f in input_files]
         self.ivt_vars = ivt_vars
@@ -235,21 +245,25 @@ class ARInferenceDataset(Dataset):
         self.use_memory_mapping = use_memory_mapping
         self.chunk_size = chunk_size
         self.return_metadata = return_metadata
+        self.verbose = verbose
         
         # Store normalization parameters
         self.ivt_mean = np.array(ivt_mean, dtype=np.float32).reshape(3, 1, 1)
         self.ivt_std = np.array(ivt_std, dtype=np.float32).reshape(3, 1, 1)
 
         if self.use_memory_mapping:
-            print("Opening dataset files with memory mapping...")
+            if self.verbose:
+                print("Opening dataset files with memory mapping...")
             self.input_datasets = [xr.open_dataset(f, chunks=self.chunk_size) for f in self.input_files]
         else:
             self.input_datasets = None
 
         # Build index
-        print("Building dataset index...")
+        if self.verbose:
+            print("Building dataset index...")
         self._build_index()
-        print(f"Dataset ready with {len(self.index)} samples.")
+        if self.verbose:
+            print(f"Dataset ready with {len(self.index)} samples.")
 
     def _build_index(self):
         """

@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='Learning rate for pre-trained parameters')
     parser.add_argument('--scratch_lr', type=float, default=1e-4, help='Learning rate for scratch parameters')
-    parser.add_argument('--warmup_epochs', type=int, default=5, help='Number of warmup epochs for scratch parameters')
+    parser.add_argument('--warmup_steps', type=int, default=500, help='Number of warmup steps for scratch parameters')
     parser.add_argument('--warmup_start_lr', type=float, default=1e-6, help='Starting learning rate for warmup of scratch parameters')
 
     parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--wandb_project", type=str, default="deep_ar_training", help="Weights & Biases project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="Weights & Biases run name")
+    #parser.add_argument("--wandb_watch", action="store_true", help="Enable wandb.watch to log gradients and parameters")
 
     # TODO: Experimental. Need to test if this works properly.
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint directory or .safetensors file to load before training starts")
@@ -139,7 +140,9 @@ def train_one_epoch(
                     
                     log_dict = {"train/step_loss": avg_loss}
                     if scheduler is not None:
-                        log_dict["train/lr"] = scheduler.get_last_lr()[0]
+                        lrs = scheduler.get_last_lr()
+                        log_dict["train/lr_pretrained"] = lrs[0]
+                        log_dict["train/lr_scratch"] = lrs[1]
 
                     accelerator.log(log_dict, step=global_step)
 
@@ -289,13 +292,24 @@ def train(
 
         
         if accelerator.is_main_process:
-            epoch_step = progress_bar.n if progress_bar is not None else 0
-            accelerator.log({
-                "train_loss": train_loss,
-                "val_loss": val_loss,
-                "best_val_loss": best_val_loss,
-                "epoch": epoch,
-            }, step=epoch_step)
+            # Build epoch-level log dict
+            epoch_log_dict = {
+                "train/epoch": epoch,
+                "train/epoch_loss": train_loss,
+                "val/loss": val_loss,
+                "val/best_val_loss": best_val_loss,
+                "train/epochs_without_improvement": epochs_without_improvement,
+            }
+            
+            # Add learning rates if scheduler exists
+            if scheduler is not None:
+                lrs = scheduler.get_last_lr()
+                epoch_log_dict["train/epoch_lr_pretrained"] = lrs[0]
+                epoch_log_dict["train/epoch_lr_scratch"] = lrs[1]
+            
+            # Log with epoch as step for epoch-level metrics
+            global_step = progress_bar.n if progress_bar is not None else 0
+            accelerator.log(epoch_log_dict, step=global_step)
 
             accelerator.print(f"Epoch: {epoch} | train_loss={train_loss:.4f} | val_loss={val_loss:.4f}")
 
@@ -317,6 +331,7 @@ def main():
 
     fsdp_plugin_kwargs = {
         "fsdp_version": 2,
+        "state_dict_type": "FULL_STATE_DICT",
         "state_dict_config": FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
         "limit_all_gathers": True,
         "reshard_after_forward": True,  # Required for FSDP2
@@ -457,8 +472,8 @@ def main():
     train_gt_files = sorted(list(Path(args.train_gt_dir).glob("*.nc")))
     val_gt_files = sorted(list(Path(args.val_gt_dir).glob("*.nc")))
 
-    train_dataset = ARTrainingDataset(input_files=train_input_files, gt_files=train_gt_files)
-    val_dataset = ARTrainingDataset(input_files=val_input_files, gt_files=val_gt_files)
+    train_dataset = ARTrainingDataset(input_files=train_input_files, gt_files=train_gt_files, verbose=accelerator.is_main_process)
+    val_dataset = ARTrainingDataset(input_files=val_input_files, gt_files=val_gt_files, verbose=accelerator.is_main_process)
 
     train_loader = DataLoader(
         train_dataset,
@@ -477,8 +492,7 @@ def main():
 
     criterion = CombinedLoss()
     optimizer = torch.optim.AdamW(param_groups)
-    scheduler = get_scheduler(optimizer, args)
-
+    
     # Load safetensors checkpoint BEFORE prepare() on rank 0 only (if provided)
     if args.resume_from_checkpoint and args.resume_from_checkpoint.endswith(".safetensors") and accelerator.is_main_process:
         accelerator.print(f"Loading weights from {args.resume_from_checkpoint} on rank 0...")
@@ -487,15 +501,29 @@ def main():
         accelerator.print(f"Successfully loaded weights on rank 0. Will sync to all ranks during prepare().")
 
     accelerator.print("Preparing model, optimizer, and dataloaders with Accelerator...")
-    # Prepare everything with accelerator
-    # sync_module_states=True will broadcast weights from rank 0 to all ranks
-    model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
-        model, optimizer, train_loader, val_loader, scheduler
+   
+    model, optimizer, train_loader, val_loader = accelerator.prepare(
+        model, optimizer, train_loader, val_loader
     )
 
-    num_batches_per_epoch = len(train_loader)
-    num_update_steps_per_epoch = (num_batches_per_epoch + args.gradient_accumulation_steps - 1) // args.gradient_accumulation_steps
-    max_train_steps = args.epochs * num_update_steps_per_epoch
+    batches_per_epoch = len(train_loader)
+    steps_per_epoch = (batches_per_epoch + args.gradient_accumulation_steps - 1) // args.gradient_accumulation_steps
+    total_training_steps = args.epochs * steps_per_epoch
+    
+    accelerator.print(f"Batches per epoch (per device): {batches_per_epoch}")
+    accelerator.print(f"Steps per epoch: {steps_per_epoch}")
+    accelerator.print(f"Total training steps: {total_training_steps}")
+
+    scheduler = get_scheduler(optimizer, args, total_training_steps)
+    accelerator.register_for_checkpointing(scheduler)
+
+    # TODO: This seems to not work with FSDP. Need to find another way. Disabling it for now.
+    # if args.wandb_watch and accelerator.is_main_process:
+    #     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
+    #         accelerator.print(f"Enabling wandb watch")
+    #         wandb.watch(accelerator.unwrap_model(model), log="all", log_freq=100)
+    #     else:
+    #         accelerator.print("Unable to start wandb watch.")
 
     start_epoch = 1
     best_val_loss = float("inf")
@@ -513,14 +541,22 @@ def main():
             # Load the optimizer states, scheduler states, and any other training state information
             accelerator.load_state(checkpoint_path)
 
-            # Load training metadata
+            # Load training metadata (only on main process, then broadcast)
             metadata_path = checkpoint_path / "training_metadata.json"
-            if metadata_path.exists():
+            if metadata_path.exists() and accelerator.is_main_process:
                 import json
                 with open(metadata_path, "r") as f:
                     metadata = json.load(f)
                 start_epoch = metadata.get("epoch", 0) + 1
                 best_val_loss = metadata.get("best_val_loss", float("inf"))
+            
+            # Broadcast metadata to all ranks (rank 0 has loaded values, others have defaults from init)
+            from accelerate.utils import broadcast_object_list
+            metadata_list = [start_epoch, best_val_loss]
+            broadcast_object_list(metadata_list, from_process=0)
+            start_epoch, best_val_loss = metadata_list
+            
+            if accelerator.is_main_process:
                 accelerator.print(f"Resuming from epoch {start_epoch}, best_val_loss: {best_val_loss:.4f}")
         else:
             accelerator.print(f"Note: {checkpoint_path} is not a full training state checkpoint.",
@@ -528,9 +564,9 @@ def main():
 
     # Initialize global progress bar AFTER loading checkpoint to get correct start_epoch
     # Calculate how many steps have already been completed
-    steps_completed = (start_epoch - 1) * num_update_steps_per_epoch
+    steps_completed = (start_epoch - 1) * steps_per_epoch
     global_progress_bar = tqdm(
-        total=max_train_steps,
+        total=total_training_steps,
         initial=steps_completed,
         disable=not accelerator.is_local_main_process,
         desc="Training Steps"
@@ -543,7 +579,7 @@ def main():
     accelerator.print(f"Batch size per device: {args.batch_size}")
     accelerator.print(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
     accelerator.print(f"Effective batch size: {args.batch_size * accelerator.num_processes * args.gradient_accumulation_steps}")
-    accelerator.print(f"Total training steps: {max_train_steps}")
+    accelerator.print(f"Total training steps: {total_training_steps}")
 
     train(
         criterion=criterion,

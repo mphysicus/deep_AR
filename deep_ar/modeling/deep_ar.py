@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Dict
 
 from .sam_no_prompt import SamAR
-from .input_generator import IVT2RGB
+from .ivt2rgb import IVT2RGB
 
 class DeepAR(nn.Module):
     def __init__(self, 

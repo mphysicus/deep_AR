@@ -1,11 +1,11 @@
 import torch
 from functools import partial
+from safetensors.torch import load_file
 
 from .modeling import ImageEncoderViT, MaskDecoder, TwoWayTransformer
 from .modeling.sam_no_prompt import SamAR
 from .modeling.deep_ar import DeepAR
-from .modeling.input_generator import IVT2RGB
-
+from .modeling.ivt2rgb import IVT2RGB
 
 def build_deep_ar_vit_h(checkpoint=None):
     return _build_deep_ar(
@@ -91,7 +91,10 @@ def _build_deep_ar(
     sam_ar.eval()
     if checkpoint is not None:
         print(f"Loading model from {checkpoint}")
-        with open(checkpoint, "rb") as f:
-            state_dict = torch.load(f)
+        if str(checkpoint).endswith(".safetensors"):
+            state_dict = load_file(checkpoint)
+        else:
+            with open(checkpoint, "rb") as f:
+                state_dict = torch.load(f)
         deep_ar.load_state_dict(state_dict)
     return deep_ar
