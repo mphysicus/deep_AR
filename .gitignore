@@ -210,3 +210,4 @@ __marimo__/
 *.nc
 /train/wandb/
 /train/wandb_sweep_config.yaml
+/train/sweep_checkpoints

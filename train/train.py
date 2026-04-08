@@ -12,6 +12,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConf
 
 from safetensors.torch import save_file, load_file
 from peft import LoraConfig, get_peft_model
+from checkpoint import CheckpointManager
 
 import wandb
 import os
@@ -33,8 +34,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--min_delta', type=float, default=0.001, help='Minimum improvement for early stopping')
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps")
     parser.add_argument('--early_stopping_patience', type=int, default=10, help='Early stopping patience epochs')
-    parser.add_argument("--output_dir", type=str, default="./checkpoints", help="Directory for checkpoints and logs")
+    parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory for checkpoints and logs')
     parser.add_argument('--original_sam_checkpoint', type=str, default=None, help='Path to original SAM checkpoint for initialization')
+    parser.add_argument('--trained_checkpoint', type=str, default=None, help='Path to trained weights (.safetensors) for initialization. This is for Phase 2 training, where you want to start from the best model obtained after Phase 1 training (only_cnn).')
 
     parser.add_argument('--pretrained_lr', type=float, default=1e-5, help='Learning rate for pre-trained parameters')
     parser.add_argument('--scratch_lr', type=float, default=1e-4, help='Learning rate for scratch parameters')
@@ -217,6 +219,7 @@ def train(
         min_delta: float,
         output_dir: Path,
         args: argparse.Namespace,
+        checkpoint_manager: CheckpointManager,
         start_epoch: int = 1,
         best_val_loss: float = float("inf"),
         progress_bar: Optional[tqdm] = None,
@@ -260,30 +263,7 @@ def train(
             best_epoch = epoch
             epochs_without_improvement = 0
 
-            accelerator.print(f"New best val_loss: {best_val_loss:.4f} at epoch {best_epoch}. Saving checkpoint...")
-
-            # Save full training state using accelerate
-            checkpoint_dir = output_dir / "best_checkpoint"
-            accelerator.save_state(checkpoint_dir)
-
-            # Gather full model state_dict (collective call, must run on ALL ranks with FSDP)
-            full_state_dict = accelerator.get_state_dict(model)
-
-            # Save additional training metadata and standalone weights
-            if accelerator.is_main_process:
-                import json
-                metadata = {
-                    "epoch": epoch,
-                    "best_val_loss": best_val_loss,
-                    "train_loss": train_loss
-                }
-                with open(checkpoint_dir / "training_metadata.json", "w") as f:
-                    json.dump(metadata, f)
-            
-            if accelerator.is_main_process:
-                save_path = output_dir / f"best_model.safetensors"
-                save_file(full_state_dict, str(save_path))
-                accelerator.print(f"Saved best model weights to {save_path}")
+            checkpoint_manager.save_best_checkpoint(model, epoch, best_val_loss, train_loss)
 
         else:
             epochs_without_improvement += 1
@@ -324,6 +304,9 @@ def train(
 
 def main():
     args = parse_args()
+
+    if args.original_sam_checkpoint is not None and args.trained_checkpoint is not None:
+        raise ValueError("Cannot provide both --original_sam_checkpoint and --trained_checkpoint. Please provide only one.")
 
     set_seed(args.seed)
 
@@ -384,14 +367,28 @@ def main():
     model_builder = deep_ar_model_registry[args.model_type]
     model = model_builder(checkpoint=None)
 
+    # Load trained checkpoint
+    if args.trained_checkpoint is not None:
+        if accelerator.is_main_process:
+            accelerator.print(f"Loading trained checkpoint from {args.trained_checkpoint}...")
+            state_dict = load_file(args.trained_checkpoint)
+            
+            load_result = model.load_state_dict(state_dict, strict=False)
+            accelerator.print("Successfully loaded trained weights of DeepAR.")
+            if load_result.missing_keys:
+                accelerator.print(f"Missing keys: {load_result.missing_keys}")
+            if load_result.unexpected_keys:
+                accelerator.print(f"Unexpected keys: {load_result.unexpected_keys}")
+        accelerator.wait_for_everyone()
+
     # Load original SAM checkpoint on CPU (rank 0 only, sync_module_states will broadcast)
-    if args.original_sam_checkpoint is not None:
+    elif args.original_sam_checkpoint is not None:
         if accelerator.is_main_process:
             accelerator.print(f"Loading original SAM checkpoint from {args.original_sam_checkpoint} on CPU...")
             state_dict = torch.load(args.original_sam_checkpoint, map_location="cpu", weights_only=True)
             adapted_state_dict = {"sam_model." + k: v for k, v in state_dict.items()}
             load_result = model.load_state_dict(adapted_state_dict, strict=False)
-            accelerator.print(f"Successfully loaded SAM weights. FSDP2 will shard and move to GPU during prepare().")
+            accelerator.print("Successfully loaded SAM weights. FSDP2 will shard and move to GPU during prepare().")
             if load_result.missing_keys:
                 accelerator.print(f"Missing keys: {load_result.missing_keys}")
             if load_result.unexpected_keys:
@@ -407,14 +404,14 @@ def main():
             target_modules=args.lora_target_modules,
             bias="none",
             task_type=None,
-            modules_to_save=["no_mask_embedding"],
         )
         model.sam_model = get_peft_model(model.sam_model, lora_config)
+        model.base_model.sam_model.no_mask_embedding.requires_grad = True
         if accelerator.is_main_process:
             model.sam_model.print_trainable_parameters()
     
     elif args.train_method == 'only_cnn':
-        accelerator.print(f"Training only the new CNN module (IVT2RGB).")
+        accelerator.print("Training only the new CNN module (IVT2RGB).")
 
         for param in model.sam_model.parameters():
             param.requires_grad = False
@@ -432,7 +429,7 @@ def main():
                     accelerator.print(f"Trainable parameter: {name} with shape {param.shape}")
 
     elif args.train_method == 'none':
-        accelerator.print(f"Training all parameters (no PEFT).")
+        accelerator.print("Training all parameters (no PEFT).")
     
     else:
         raise ValueError(f"Unsupported PEFT method: {args.train_method}")
@@ -498,7 +495,7 @@ def main():
         accelerator.print(f"Loading weights from {args.resume_from_checkpoint} on rank 0...")
         state = load_file(args.resume_from_checkpoint)
         model.load_state_dict(state, strict=False)
-        accelerator.print(f"Successfully loaded weights on rank 0. Will sync to all ranks during prepare().")
+        accelerator.print("Successfully loaded weights on rank 0. Will sync to all ranks during prepare().")
 
     accelerator.print("Preparing model, optimizer, and dataloaders with Accelerator...")
    
@@ -528,39 +525,11 @@ def main():
     start_epoch = 1
     best_val_loss = float("inf")
 
+    checkpoint_manager = CheckpointManager(output_dir, accelerator, args.train_method)
+
     if args.resume_from_checkpoint is not None:
         accelerator.print(f"Resuming training from checkpoint: {args.resume_from_checkpoint}")
-
-        checkpoint_path = Path(args.resume_from_checkpoint)
-
-        is_full_checkpoint = (checkpoint_path.is_dir() and (checkpoint_path / "scheduler.bin").exists())
-
-        if is_full_checkpoint:
-            accelerator.print(f"Resuming full training state from: {checkpoint_path}...")
-
-            # Load the optimizer states, scheduler states, and any other training state information
-            accelerator.load_state(checkpoint_path)
-
-            # Load training metadata (only on main process, then broadcast)
-            metadata_path = checkpoint_path / "training_metadata.json"
-            if metadata_path.exists() and accelerator.is_main_process:
-                import json
-                with open(metadata_path, "r") as f:
-                    metadata = json.load(f)
-                start_epoch = metadata.get("epoch", 0) + 1
-                best_val_loss = metadata.get("best_val_loss", float("inf"))
-            
-            # Broadcast metadata to all ranks (rank 0 has loaded values, others have defaults from init)
-            from accelerate.utils import broadcast_object_list
-            metadata_list = [start_epoch, best_val_loss]
-            broadcast_object_list(metadata_list, from_process=0)
-            start_epoch, best_val_loss = metadata_list
-            
-            if accelerator.is_main_process:
-                accelerator.print(f"Resuming from epoch {start_epoch}, best_val_loss: {best_val_loss:.4f}")
-        else:
-            accelerator.print(f"Note: {checkpoint_path} is not a full training state checkpoint.",
-                              "Assuming weights were loaded before prepare(). Starting new training loop.")
+        start_epoch, best_val_loss = checkpoint_manager.load_training_state(args.resume_from_checkpoint)
 
     # Initialize global progress bar AFTER loading checkpoint to get correct start_epoch
     # Calculate how many steps have already been completed
@@ -594,10 +563,16 @@ def main():
         min_delta=args.min_delta,
         output_dir=output_dir,
         args=args,
+        checkpoint_manager=checkpoint_manager,
         start_epoch=start_epoch,
         best_val_loss=best_val_loss,
         progress_bar=global_progress_bar
     )
+
+    accelerator.wait_for_everyone()
+
+    # Perform full merge_and_unload for inference at the very end
+    checkpoint_manager.final_merge_and_unload(model)
 
     accelerator.end_training()
     accelerator.print("Training complete.")
