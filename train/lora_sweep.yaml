@@ -1,16 +1,14 @@
 program: train.py
-method: grid
+method: bayes
 entity: deep_ar
-project: only_cnn_vit_l_sweep
+project: lora_vit_b_sweep
 metric:
   name: best_val_loss
   goal: minimize
 # Hyperparameters
 parameters:
   model_type:
-    value: "vit_l" 
-  original_sam_checkpoint:
-    value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
+    value: "vit_b" 
   train_input_dir:
     value: "/storage/prakhar/Sem_Project/data_files/realigned_merged_ivt/train_1"
   val_input_dir:
@@ -20,9 +18,13 @@ parameters:
   val_gt_dir:
     value: "/storage/prakhar/Sem_Project/data_files/pikart/validation"
   train_method:
-    value: "only_cnn"
+    value: "lora"
+  lora_rank:
+    values: [4, 8, 12, 16]
+  lora_dropout:
+    values: [0.05, 0.1, 0.2]
   epochs:
-    value: 110
+    value: 100
   early_stopping_patience:
     value: 10
   pretrained_lr:
@@ -30,11 +32,11 @@ parameters:
   scratch_lr:
     value: 1e-4
   warmup_steps:
-    value: 250
+    value: 300
   warmup_start_lr:
     value: 1e-6
   batch_size:
-    value: 12
+    value: 15
   gradient_accumulation_steps:
     values: [1, 4, 8, 12]
 command:
@@ -45,4 +47,6 @@ command:
   - ${program}
   - ${args}
   - --output_dir
-  - ./sweep_checkpoints/only_cnn_vit_l
+  - ./sweep_checkpoints/lora_vit_b
+  - --trained_checkpoint
+  - /storage/prakhar/Sem_Project/model/train/sweep_checkpoints/only_cnn_vit_b_new/dulcet_sweep_1/best_model.safetensors

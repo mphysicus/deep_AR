@@ -10,7 +10,7 @@ from accelerate.utils import set_seed
 from torch.utils.data import DataLoader
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
 
-from safetensors.torch import save_file, load_file
+from safetensors.torch import load_file
 from peft import LoraConfig, get_peft_model
 from checkpoint import CheckpointManager
 
@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--scratch_lr', type=float, default=1e-4, help='Learning rate for scratch parameters')
     parser.add_argument('--warmup_steps', type=int, default=500, help='Number of warmup steps for scratch parameters')
     parser.add_argument('--warmup_start_lr', type=float, default=1e-6, help='Starting learning rate for warmup of scratch parameters')
+    parser.add_argument('--scratch_param_keywords', type=str, nargs='+', default=['no_mask_embedding', 'input_generator'], help='List of keywords to identify scratch parameters for separate learning rate')
 
     parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
     parser.add_argument('--val_input_dir', type=str, required=True, help='Path to validation directory containing .nc files')
@@ -53,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--lora_rank', type=int, default=8, help='LoRA rank (default: 8)')
     parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha scaling (default: 16)')
     parser.add_argument('--lora_dropout', type=float, default=0.0, help='LoRA dropout rate (default: 0.0)')
-    parser.add_argument('--lora_target_modules', type=str, nargs='+', default=['qkv', 'proj'], help='Target modules for LoRA (default: qkv proj)')
+    parser.add_argument('--lora_target_modules', type=str, nargs='+', default=['qkv', 'proj', 'conv1', 'conv2', 'conv3', 'conv4'], help='Target modules for LoRA (default: qkv proj)')
 
     parser.add_argument("--wandb_project", type=str, default="deep_ar_training", help="Weights & Biases project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="Weights & Biases run name")
@@ -75,7 +76,8 @@ def train_one_epoch(
         scheduler = None,
         progress_bar: Optional[tqdm] = None,
 ) -> float:
-    """Train for one epoch.
+    """
+    Train for one epoch.
 
     Args:
         model: DeepAR model
@@ -112,7 +114,7 @@ def train_one_epoch(
 
             #TODO: Check this if this really helps. Need to do more research
             if accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
+                accelerator.clip_grad_norm_(model.parameters(), max_norm=5.0)  # Gradient clipping
 
             optimizer.step()
 
@@ -274,10 +276,10 @@ def train(
         if accelerator.is_main_process:
             # Build epoch-level log dict
             epoch_log_dict = {
-                "train/epoch": epoch,
+                "epoch": epoch,
                 "train/epoch_loss": train_loss,
                 "val/loss": val_loss,
-                "val/best_val_loss": best_val_loss,
+                "best_val_loss": best_val_loss,
                 "train/epochs_without_improvement": epochs_without_improvement,
             }
             
@@ -298,7 +300,13 @@ def train(
             if accelerator.is_main_process:
                 accelerator.print(f"Early stopping triggered after {epoch} epochs. Best val_loss: {best_val_loss:.4f} at epoch {best_epoch}.")
             break
-    
+
+        if epoch == 1 and accelerator.is_main_process:
+            accelerator.print("LoRA parameters after applying PEFT:")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    accelerator.print(f"Trainable parameter: {name} with shape {param.shape}")
+
     if progress_bar is not None:
         progress_bar.close()
 
@@ -405,13 +413,15 @@ def main():
             bias="none",
             task_type=None,
         )
-        model.sam_model = get_peft_model(model.sam_model, lora_config)
-        model.base_model.sam_model.no_mask_embedding.requires_grad = True
+        model = get_peft_model(model, lora_config)
+        
+        model.base_model.model.sam_model.no_mask_embedding.requires_grad = True
+            
         if accelerator.is_main_process:
-            model.sam_model.print_trainable_parameters()
+            model.print_trainable_parameters()
     
     elif args.train_method == 'only_cnn':
-        accelerator.print("Training only the new CNN module (IVT2RGB).")
+        accelerator.print("Training only the new CNN module (IVT2RGB) and the no_mask_embedding.")
 
         for param in model.sam_model.parameters():
             param.requires_grad = False
@@ -437,12 +447,11 @@ def main():
     # Build parameter groups with different learning rates
     params_scratch = []
     params_pretrained = []
-
-    scratch_param_keywords = [
-        'patch_embed',
-        'no_mask_embedding',
-        'input_generator'
-    ]
+    
+    if args.train_method == 'lora':
+        scratch_param_keywords = []
+    elif args.train_method == 'only_cnn':
+        scratch_param_keywords = args.scratch_param_keywords
 
     for name, param in model.named_parameters():
         if not param.requires_grad:

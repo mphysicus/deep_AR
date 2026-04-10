@@ -1,16 +1,16 @@
 program: train.py
 method: grid
 entity: deep_ar
-project: only_cnn_vit_l_sweep
+project: only_cnn_vit_b_sweep_new
 metric:
   name: best_val_loss
   goal: minimize
 # Hyperparameters
 parameters:
   model_type:
-    value: "vit_l" 
+    value: "vit_b" 
   original_sam_checkpoint:
-    value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_l.pth"
+    value: "/storage/prakhar/Sem_Project/weights/original_weights/sam_vit_b.pth"
   train_input_dir:
     value: "/storage/prakhar/Sem_Project/data_files/realigned_merged_ivt/train_1"
   val_input_dir:
@@ -36,7 +36,7 @@ parameters:
   batch_size:
     value: 12
   gradient_accumulation_steps:
-    values: [1, 4, 8, 12]
+    values: [1, 5, 10]
 command:
   - accelerate
   - launch
@@ -45,4 +45,4 @@ command:
   - ${program}
   - ${args}
   - --output_dir
-  - ./sweep_checkpoints/only_cnn_vit_l
+  - /storage/prakhar/Sem_Project/sweep_checkpoints/only_cnn_vit_b_new
