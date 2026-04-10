@@ -251,6 +251,12 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(start_epoch, max_epochs + 1):
+        if epoch == 1 and accelerator.is_main_process:
+            accelerator.print("LoRA parameters after applying PEFT:")
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    accelerator.print(f"Trainable parameter: {name} with shape {param.shape}")
+                    
         train_loss = train_one_epoch(criterion,
             model, train_loader, optimizer, accelerator,
             epoch, args, scheduler, progress_bar
@@ -300,12 +306,6 @@ def train(
             if accelerator.is_main_process:
                 accelerator.print(f"Early stopping triggered after {epoch} epochs. Best val_loss: {best_val_loss:.4f} at epoch {best_epoch}.")
             break
-
-        if epoch == 1 and accelerator.is_main_process:
-            accelerator.print("LoRA parameters after applying PEFT:")
-            for name, param in model.named_parameters():
-                if param.requires_grad:
-                    accelerator.print(f"Trainable parameter: {name} with shape {param.shape}")
 
     if progress_bar is not None:
         progress_bar.close()
