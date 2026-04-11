@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from safetensors.torch import save_file, load_file
@@ -100,7 +99,7 @@ class CheckpointManager:
                 adapter_state = load_file(str(best_model_path))
                 final_model.load_state_dict(adapter_state, strict=False)
                 
-                final_model.sam_model = final_model.sam_model.merge_and_unload()
+                final_model = final_model.merge_and_unload()
                 
                 final_save_path = self.output_dir / "inference_ready_model.safetensors"
                 save_file(final_model.state_dict(), str(final_save_path))
