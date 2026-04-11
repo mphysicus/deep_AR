@@ -1,7 +1,7 @@
 program: train.py
 method: bayes
 entity: deep_ar
-project: lora_vit_b_sweep
+project: lora_vit_b_new
 metric:
   name: best_val_loss
   goal: minimize
@@ -47,6 +47,6 @@ command:
   - ${program}
   - ${args}
   - --output_dir
-  - ./sweep_checkpoints/lora_vit_b
+  - /storage/prakhar/sweep_checkpoints/lora_vit_b_new
   - --trained_checkpoint
   - /storage/prakhar/Sem_Project/model/train/sweep_checkpoints/only_cnn_vit_b_new/dulcet_sweep_1/best_model.safetensors

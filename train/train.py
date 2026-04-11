@@ -289,12 +289,6 @@ def train(
                 "train/epochs_without_improvement": epochs_without_improvement,
             }
             
-            # Add learning rates if scheduler exists
-            if scheduler is not None:
-                lrs = scheduler.get_last_lr()
-                epoch_log_dict["train/epoch_lr_pretrained"] = lrs[0]
-                epoch_log_dict["train/epoch_lr_scratch"] = lrs[1]
-            
             # Log with epoch as step for epoch-level metrics
             global_step = progress_bar.n if progress_bar is not None else 0
             accelerator.log(epoch_log_dict, step=global_step)
