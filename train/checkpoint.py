@@ -4,6 +4,7 @@ from pathlib import Path
 import torch.nn as nn
 from accelerate import Accelerator
 from safetensors.torch import save_file, load_file
+from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
 class CheckpointManager:
     """Manages saving and loading of model checkpoints."""
@@ -44,9 +45,8 @@ class CheckpointManager:
                 
                 # Unwrap the model to access named_parameters without FSDP wrappers
                 unwrapped_model = self.accelerator.unwrap_model(model)
-                
-                trainable_keys = [k for k, v in unwrapped_model.named_parameters() if v.requires_grad]
-                state_dict_to_save = {k: full_state_dict[k] for k in trainable_keys if k in full_state_dict}
+
+                state_dict_to_save = get_peft_model_state_dict(unwrapped_model, state_dict=full_state_dict)
             else:
                 state_dict_to_save = full_state_dict
             
@@ -87,22 +87,23 @@ class CheckpointManager:
         return start_epoch, best_val_loss
 
     def final_merge_and_unload(self, model: nn.Module):
-        """Merges LoRA adapter into the base model at the end of training for a pristine inference model."""
+        """
+        Merges LoRA adapter into the base model at the end of training for a pristine inference model.
+        """
         if self.train_method == 'lora' and self.accelerator.is_main_process:
             self.accelerator.print("\nTraining complete. Performing merge_and_unload for the final inference checkpoint...")
             
-            final_model = self.accelerator.unwrap_model(model)
             best_model_path = self.output_dir / "best_model.safetensors"
             
             if best_model_path.exists():
                 self.accelerator.print(f"Loading best model weights from {best_model_path} for merging...")
                 adapter_state = load_file(str(best_model_path))
-                final_model.load_state_dict(adapter_state, strict=False)
+                set_peft_model_state_dict(model, adapter_state)
                 
-                final_model = final_model.merge_and_unload()
+                final_model = model.merge_and_unload()
                 
                 final_save_path = self.output_dir / "inference_ready_model.safetensors"
                 save_file(final_model.state_dict(), str(final_save_path))
-                self.accelerator.print(f"Saved pristine, ready-for-inference merged model to {final_save_path}")
+                self.accelerator.print(f"Saved ready-for-inference merged model to {final_save_path}")
             else:
                 self.accelerator.print(f"Warning: {best_model_path} not found, skipping merge.")

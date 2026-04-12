@@ -24,7 +24,7 @@ parameters:
   lora_dropout:
     values: [0.05, 0.1, 0.2]
   epochs:
-    value: 100
+    value: 150
   early_stopping_patience:
     value: 10
   pretrained_lr:
@@ -36,9 +36,9 @@ parameters:
   warmup_start_lr:
     value: 1e-6
   batch_size:
-    value: 15
+    value: 18
   gradient_accumulation_steps:
-    values: [1, 4, 8, 12]
+    values: [1, 4, 8]
 command:
   - accelerate
   - launch
@@ -47,6 +47,6 @@ command:
   - ${program}
   - ${args}
   - --output_dir
-  - /storage/prakhar/sweep_checkpoints/lora_vit_b_new
+  - /storage/prakhar/Sem_Project/sweep_checkpoints/lora_vit_b_new
   - --trained_checkpoint
   - /storage/prakhar/Sem_Project/model/train/sweep_checkpoints/only_cnn_vit_b_new/dulcet_sweep_1/best_model.safetensors

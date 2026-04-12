@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--warmup_steps', type=int, default=500, help='Number of warmup steps for scratch parameters')
     parser.add_argument('--warmup_start_lr', type=float, default=1e-6, help='Starting learning rate for warmup of scratch parameters')
     parser.add_argument('--scratch_param_keywords', type=str, nargs='+', default=['no_mask_embedding', 'input_generator'], help='List of keywords to identify scratch parameters for separate learning rate')
+    parser.add_argument('--min_lr', type=float, default=1e-7, help='Minimum learning rate for cosine annealing (applies to both pretrained and scratch parameters)')
 
     parser.add_argument('--train_input_dir', type=str, required=True, help='Path to training directory containing .nc files')
     parser.add_argument('--val_input_dir', type=str, required=True, help='Path to validation directory containing .nc files')
@@ -406,6 +407,7 @@ def main():
             target_modules=args.lora_target_modules,
             bias="none",
             task_type=None,
+            modules_to_save=["no_mask_embedding"]
         )
         model = get_peft_model(model, lora_config)
         
@@ -517,14 +519,6 @@ def main():
     scheduler = get_scheduler(optimizer, args, total_training_steps)
     accelerator.register_for_checkpointing(scheduler)
 
-    # TODO: This seems to not work with FSDP. Need to find another way. Disabling it for now.
-    # if args.wandb_watch and accelerator.is_main_process:
-    #     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
-    #         accelerator.print(f"Enabling wandb watch")
-    #         wandb.watch(accelerator.unwrap_model(model), log="all", log_freq=100)
-    #     else:
-    #         accelerator.print("Unable to start wandb watch.")
-
     start_epoch = 1
     best_val_loss = float("inf")
 
@@ -575,7 +569,16 @@ def main():
     accelerator.wait_for_everyone()
 
     # Perform full merge_and_unload for inference at the very end
-    checkpoint_manager.final_merge_and_unload(model)
+    if args.train_method == 'lora' and accelerator.is_main_process:
+        accelerator.print("Creating a fresh CPU model for final merge_and_unload...")
+        fresh_base_model = model_builder(checkpoint=None)
+        
+        if args.trained_checkpoint is not None:
+            trained_state = load_file(args.trained_checkpoint)
+            fresh_base_model.load_state_dict(trained_state)
+            
+        fresh_peft_model = get_peft_model(fresh_base_model, lora_config)
+        checkpoint_manager.final_merge_and_unload(fresh_peft_model)
 
     accelerator.end_training()
     accelerator.print("Training complete.")
