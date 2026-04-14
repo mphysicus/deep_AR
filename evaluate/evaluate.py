@@ -44,8 +44,8 @@ def evaluate_ar_model(predict_dir, gt_dir, threshold):
     total_fp = 0
     total_fn = 0
 
-    prediction_files = glob.glob(os.path.join(predict_dir, "pred_*.nc"))
-    ground_truth_files = glob.glob(os.path.join(gt_dir, "true_*.nc"))
+    prediction_files = glob.glob(os.path.join(predict_dir, "*_inference.nc"))
+    ground_truth_files = glob.glob(os.path.join(gt_dir, "*.nc"))
 
     prediction_files.sort()
     ground_truth_files.sort()
@@ -58,6 +58,15 @@ def evaluate_ar_model(predict_dir, gt_dir, threshold):
         # Load the NetCDF datasets
         ds_pred = xr.open_dataset(pred_file)
         ds_true = xr.open_dataset(true_file)
+
+        # Rename coords to match if necessary
+        if 'latitude' in ds_true.coords:
+            ds_true = ds_true.rename({'latitude': 'lat', 'longitude': 'lon'})
+            
+        # Find common timestamps between prediction and ground truth to avoid KeyError
+        common_times = np.intersect1d(ds_pred.time.values, ds_true.time.values)
+        ds_pred = ds_pred.sel(time=common_times)
+        ds_true = ds_true.sel(time=common_times)
 
         probabilities = ds_pred["ar_mask"].values
         ground_truth = ds_true["ar_mask"].values
